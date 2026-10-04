@@ -1,0 +1,112 @@
+# =============================================================================
+# configs/preprocessing.yaml — analysis-ready input generation
+#
+# STATUS: structural placeholder. Unverified values are `null` with a TODO.
+#
+# AGENTS.md §7: do not assume rasters are aligned. CRS, transform, resolution,
+# extent, pixel alignment and acquisition geometry must be verified before any
+# pixel-level comparison. Resampling must be documented with method and reason.
+# =============================================================================
+
+version: 0.1.0
+
+# -----------------------------------------------------------------------------
+# Target analysis grid
+#
+# Every modality is brought onto one grid so that pixel-level comparison is
+# meaningful. These values are deliberately unset: the correct target CRS and
+# resolution depend on the AOI and on the native resolutions of the chosen
+# products, none of which are verified yet.
+# -----------------------------------------------------------------------------
+target_grid:
+  crs: null                 # TODO(verify): a local projected CRS is expected for
+                            # area/length computation; the specific EPSG code must be
+                            # chosen for the AOI rather than assumed.
+  resolution_m: null        # TODO(verify)
+  # Resampling must never be silent (AGENTS.md §7).
+  resampling:
+    continuous: null        # TODO: e.g. bilinear/cubic for backscatter, reflectance
+    categorical: null       # TODO: e.g. nearest for masks and class labels
+    document_reason: true
+
+# -----------------------------------------------------------------------------
+# Alignment verification — checks that must pass before comparison
+# -----------------------------------------------------------------------------
+alignment_checks:
+  verify_crs: true
+  verify_transform: true
+  verify_resolution: true
+  verify_extent: true
+  verify_pixel_alignment: true
+  verify_acquisition_geometry: true
+  # Explicit failure beats a misleading map (architecture.md §17).
+  on_failure: "fail"        # fail | warn
+
+# -----------------------------------------------------------------------------
+# Sentinel-1
+# -----------------------------------------------------------------------------
+sentinel1:
+  # TODO(verify): the required correction chain depends on the product level
+  # actually used. Enable a step only once it is implemented and documented;
+  # a flag set true here with no implementation behind it would be a false
+  # claim about the pipeline.
+  steps:
+    apply_orbit_file: null
+    thermal_noise_removal: null
+    radiometric_calibration: null
+    speckle_filter: null
+    speckle_filter_params: null
+    terrain_correction: null
+    convert_to_db: null
+  nodata_value: null        # TODO(verify)
+  # AGENTS.md §4 / architecture.md §3
+  same_track_only: true
+
+# -----------------------------------------------------------------------------
+# Sentinel-2
+# -----------------------------------------------------------------------------
+sentinel2:
+  steps:
+    harmonise_bands: null
+    cloud_masking: null
+    shadow_masking: null
+    scale_reflectance: null
+  cloud_mask_source: null   # TODO(verify)
+  # Invalid pixels must be represented, not quietly interpolated: an
+  # interpolated cloud gap could be mistaken for an observation.
+  invalid_pixel_policy: "mask"   # mask | interpolate — interpolate requires justification
+  nodata_value: null
+
+# -----------------------------------------------------------------------------
+# DEM
+# -----------------------------------------------------------------------------
+dem:
+  steps:
+    reproject_to_target_grid: null
+    fill_voids: null
+    void_fill_method: null  # TODO: document method and reason if enabled
+  derivatives: []           # computed only when a downstream stage uses them
+
+# -----------------------------------------------------------------------------
+# OSM vector handling
+# -----------------------------------------------------------------------------
+osm:
+  reproject_to_target_grid_crs: true
+  # Geometry validity and the buffer rule are scientific choices; the buffer in
+  # particular determines what counts as "exposed" and must be set in the
+  # infrastructure milestone with a documented justification and sensitivity
+  # analysis (AGENTS.md §9).
+  fix_invalid_geometries: null
+  road_buffer_m: null       # TODO: do NOT guess; drives exposure results
+  building_buffer_m: null
+
+# -----------------------------------------------------------------------------
+# Quality assurance and provenance
+# -----------------------------------------------------------------------------
+qa:
+  record_provenance: true
+  provenance_schema: "floodmap.utils.provenance.ArtifactProvenance"
+  # Preserve geospatial metadata end to end (AGENTS.md §7).
+  preserve_geospatial_metadata: true
+  # Preserve acquisition timestamps (AGENTS.md §4).
+  preserve_acquisition_timestamps: true

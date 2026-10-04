@@ -1,0 +1,118 @@
+# =============================================================================
+# configs/segmentation.yaml — flood/debris segmentation
+#
+# STATUS: structural placeholder.
+#
+# AGENTS.md §5: do not select a model because it is fashionable. No architecture
+# is chosen here. `architecture: null` is a deliberate statement that the
+# decision has not been made, not an omission to be filled in casually.
+# architecture.md §6 likewise declines to lock the project to one network.
+#
+# Before a model is committed to, AGENTS.md §5 requires establishing: label
+# compatibility, input modality compatibility, spatial resolution,
+# train/test split, compute requirements, baseline performance and
+# unseen-Himalaya performance.
+# =============================================================================
+
+version: 0.1.0
+
+# -----------------------------------------------------------------------------
+# Classes
+#
+# UNKNOWN (blocking): the class set is dictated by the permitted training
+# datasets' labels, which are not enumerated anywhere in this repository.
+# PRD.md FR-06 says the prediction must cover "flood/debris classes supported by
+# the training labels" — so this cannot be defined before the dataset registry
+# is resolved. See docs/dataset-registry.md.
+# -----------------------------------------------------------------------------
+classes:
+  names: []
+  # Mapping from dataset label values to our class indices, once known.
+  label_mapping: {}
+  ignore_index: null
+
+# -----------------------------------------------------------------------------
+# Model — intentionally unselected
+# -----------------------------------------------------------------------------
+model:
+  architecture: null        # NOT SELECTED. Must follow measured performance (AGENTS.md §5).
+  encoder: null
+  pretrained_weights: null
+  in_channels: null         # follows from the feature stack, once defined
+  num_classes: null         # follows from `classes.names`, once known
+  # Candidate architectures to compare experimentally. Empty on purpose: listing
+  # candidates now would imply an evaluation that has not happened.
+  candidates: []
+
+# -----------------------------------------------------------------------------
+# Input features
+#
+# Must reference only permitted production sources (AGENTS.md §3).
+# -----------------------------------------------------------------------------
+features:
+  sentinel1: []             # e.g. [vv_pre, vv_post, vv_ratio] — define in features milestone
+  sentinel2: []
+  indices: []               # e.g. NDWI — add only with a stated justification
+  terrain: []
+  # Normalisation statistics must be computed on TRAINING data only and reused
+  # unchanged at inference; computing them over the evaluation scene would be
+  # test-time leakage.
+  normalisation:
+    method: null
+    statistics_source: "training_split_only"
+    statistics_path: null
+
+# -----------------------------------------------------------------------------
+# Training
+# -----------------------------------------------------------------------------
+training:
+  seed: null                # set explicitly for reproducibility (AGENTS.md §14)
+  deterministic: true
+  epochs: null
+  batch_size: null
+  optimizer: null
+  learning_rate: null
+  lr_schedule: null
+  loss: null
+  augmentation: []
+  early_stopping:
+    enabled: null
+    monitor: null           # must be a validation metric, never the Himalaya holdout
+    patience: null
+  # Checkpoint selection monitors VALIDATION only. Selecting on the unseen
+  # Himalayan set would convert it into a tuning set and void the evaluation
+  # (AGENTS.md §5, docs/evaluation-protocol.md).
+  checkpoint:
+    monitor: null
+    mode: null
+    save_dir: "models"
+
+# -----------------------------------------------------------------------------
+# Inference
+# -----------------------------------------------------------------------------
+inference:
+  tile_size: null
+  tile_overlap: null
+  batch_size: null
+  # Decision threshold. TODO: selected on the validation split in the evaluation
+  # milestone and recorded with the procedure used. Not guessed here
+  # (docs/evaluation-protocol.md).
+  probability_threshold: null
+  output_probability_raster: true
+  output_class_mask: true
+
+# -----------------------------------------------------------------------------
+# Reproducibility metadata recorded with every inference
+# -----------------------------------------------------------------------------
+tracking:
+  record_provenance: true
+  provenance_schema: "floodmap.utils.provenance.ArtifactProvenance"
+  record_fields:
+    - dataset
+    - split
+    - features
+    - model
+    - hyperparameters
+    - seed
+    - metrics
+    - checkpoint

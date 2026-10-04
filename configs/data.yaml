@@ -1,0 +1,205 @@
+# =============================================================================
+# configs/data.yaml — data acquisition and source configuration
+#
+# Multimodal AI Hackathon 2026, Track B.
+#
+# STATUS: partially verified. Values confirmed against the official Track B
+# challenge specification are marked VERIFIED(spec). Values still unconfirmed
+# remain `null` with a TODO note. Nothing is populated from assumption.
+#
+# SPEC FIELD-NAME MAPPING. The challenge specification names four values that
+# this file stores under its existing nested keys rather than duplicating at
+# the top level (one source of truth per value):
+#   event_date                 -> event.date
+#   osm_snapshot_date          -> production.osm.snapshot_date
+#   dem_source                 -> production.dem.product
+#   allowed_training_datasets  -> production.training_datasets.allowed_training_datasets
+#
+# DATA RULE (AGENTS.md §3, architecture.md §18): the `production` block may
+# contain ONLY Sentinel-1, Sentinel-2, Copernicus DEM, pre-event OSM and
+# permitted training datasets. Validation-only sources live in a separate
+# `validation_only` block and must never be read by training, feature
+# construction, preprocessing, inference or threshold selection.
+# =============================================================================
+
+version: 0.1.0
+
+# -----------------------------------------------------------------------------
+# MANDATORY ATTRIBUTION (AGENTS.md §18)
+#
+# VERIFIED(spec). These three strings must appear on every submitted artifact,
+# dashboard view and situation report. They are reproduced here so that config
+# consumers can emit them, but the ENFORCING copy lives in
+# `src/floodmap/utils/provenance.py::REQUIRED_ATTRIBUTIONS`, which attaches
+# them to every artifact automatically. `tests/test_configs.py` asserts the two
+# copies are byte-identical so they cannot drift apart.
+#
+# DISCREPANCY NOTE (unresolved — do not "tidy" without checking the spec PDF):
+# the WorldDEM-30 string below includes "© DLR e.V.", matching AGENTS.md §18
+# and README.md §12. A later restatement of the specification omitted that "©".
+# The form with "©" is used here because AGENTS.md is this project's declared
+# source of truth (§2) and because dropping a copyright mark from a required
+# attribution is a legal defect rather than a stylistic choice. Confirm against
+# the official specification document before submission.
+# -----------------------------------------------------------------------------
+attribution:
+  required:
+    - "Contains modified Copernicus Sentinel data 2026."
+    - "Produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved."
+    - "© OpenStreetMap contributors."
+
+# -----------------------------------------------------------------------------
+# Area of interest and event
+# -----------------------------------------------------------------------------
+aoi:
+  # TODO(verify): the challenge specification is not present in this repository,
+  # so no AOI geometry is defined. Do not invent coordinates.
+  name: null
+  # One of: bbox | geojson_path | named_region. TODO(contract): fix the canonical
+  # representation in docs/data-contract.md before implementing acquisition.
+  representation: null
+  bbox: null          # [min_lon, min_lat, max_lon, max_lat] when representation=bbox
+  geojson_path: null  # path under data/ when representation=geojson_path
+  crs: "EPSG:4326"    # Assumption: AOI expressed in geographic coordinates. Revisit if the
+                      # challenge specifies otherwise.
+
+event:
+  # Primary case study is the August 2026 Trishuli flood, Nepal (README.md §9).
+  name: "Trishuli flood, Nepal"
+  # VERIFIED(spec): event date fixed by the official Track B specification.
+  date: "2026-08-26"       # ISO 8601
+  # TODO(verify): the spec fixes the event date but not the acquisition search
+  # window. Derive these from actual Sentinel revisit availability around
+  # event.date; do not guess.
+  window_before_days: null
+  window_after_days: null
+
+# -----------------------------------------------------------------------------
+# PRODUCTION INPUTS — permitted sources only
+# -----------------------------------------------------------------------------
+production:
+
+  sentinel1:
+    enabled: true
+    # TODO(verify): product type and polarisations against the challenge spec.
+    product_type: null        # e.g. GRD — VERIFY
+    polarisations: null       # e.g. [VV, VH] — VERIFY
+    # AGENTS.md §4: prefer the same orbit track for change detection.
+    require_same_relative_orbit: true
+    # If no same-track pair exists, fail explicitly rather than silently
+    # comparing different geometries (architecture.md §17).
+    on_no_same_track_pair: "fail"   # fail | warn_and_continue
+    relative_orbit: null
+    orbit_direction: null
+    target_resolution_m: null       # TODO(verify)
+
+  sentinel2:
+    enabled: true
+    processing_level: null      # e.g. L2A — VERIFY
+    bands: null                 # TODO(verify) against label/feature requirements
+    max_scene_cloud_percent: null   # TODO: choose from data availability, not guessed
+    cloud_mask_source: null     # TODO(verify) which mask product is used
+    target_resolution_m: null
+
+  dem:
+    enabled: true
+    # VERIFIED(spec): the challenge specification fixes the DEM source.
+    # Attribution for this product is mandatory — see the `attribution` block.
+    product: "Copernicus WorldDEM-30"
+    # TODO(verify): the spec names the product but not the release/version tag
+    # of the copy that will actually be downloaded. Record it at acquisition
+    # time from the provider response, not from assumption.
+    version: null
+    # TODO(verify): "30" in the product name denotes ~30 m nominal spacing, but
+    # the delivered grid and CRS must be read from the asset itself rather than
+    # inferred from the name.
+    resolution_m: null
+    crs: null
+    derivatives: []             # e.g. [slope, aspect, flow_direction] — add only when used
+
+  osm:
+    enabled: true
+    # AGENTS.md §3: the snapshot MUST predate the event.
+    # VERIFIED(spec): pre-event snapshot date fixed by the specification.
+    # 2026-07-27 < event.date (2026-08-26), so the pre-event constraint holds.
+    snapshot_date: "2026-07-27"   # ISO 8601; must be < event.date
+    # VERIFIED(spec): historical extract retrieved via the ohsome API, which
+    # serves time-sliced OSM history and therefore can return a genuine
+    # pre-event state rather than a current-day planet extract.
+    snapshot_source: "ohsome API"
+    layers:
+      buildings: true
+      roads: true
+      bridges: true
+    # Hard guard: post-event OSM edits are validation-only.
+    allow_post_event_edits: false
+
+  training_datasets:
+    # VERIFIED(spec): the permitted training datasets are enumerated by the
+    # official Track B challenge specification. This resolves the blocking
+    # UNKNOWN previously recorded here and in docs/dataset-registry.md §1.5.
+    # Adding any dataset NOT in this list is a data-governance violation.
+    allowed_training_datasets:
+      - "kuro_siwo"
+      - "sen1floods11"
+    # Per-dataset detail. `role` is from the specification; `license` and
+    # `citation` are required by AGENTS.md §18 ("Training datasets must be
+    # cited according to their respective licenses and papers").
+    datasets:
+      - id: "kuro_siwo"
+        name: "Kuro Siwo"
+        role: "production_training_input"
+        required: true
+        # TODO(verify): the spec records "MIT / CC BY". Confirm which applies to
+        # the code and which to the data before redistributing either.
+        license: "MIT / CC BY"
+        citation: "Bountos et al., 2024 (NeurIPS 2024)"
+        path: null      # TODO: populate when the dataset is actually acquired
+      - id: "sen1floods11"
+        name: "Sen1Floods11"
+        role: "optional_training_input"
+        required: false
+        license: "CC BY 4.0"
+        citation: "Bonafilia et al., 2020 (CVPRW 2020)"
+        path: null      # TODO: populate when the dataset is actually acquired
+
+# -----------------------------------------------------------------------------
+# VALIDATION-ONLY SOURCES — never production inputs
+#
+# Present so the boundary is explicit and auditable. Consumed only by the
+# evaluation layer, and only after a production prediction exists
+# (architecture.md §11).
+# -----------------------------------------------------------------------------
+validation_only:
+  enabled: false
+  note: >-
+    These sources are for post-hoc comparison only. Importing any of them into
+    training, feature construction, preprocessing, inference or threshold
+    selection is a critical defect (AGENTS.md §3).
+  sources:
+    - name: "EMSR927"
+      # VERIFIED(spec): the specification identifies EMSR927 as the Copernicus
+      # EMS activation for this event and classifies it VALIDATION ONLY. Using
+      # it as a production input (training, features, preprocessing, inference
+      # or threshold selection) is explicitly prohibited.
+      status: "VERIFIED"
+      purpose: "post-hoc comparison for the Trishuli case study"
+      prohibited_as_production_input: true
+      path: null        # TODO: populate only when the comparison milestone starts
+    - name: "UNOSAT"
+      purpose: "post-hoc comparison"
+      path: null
+    - name: "post-event OSM edits"
+      purpose: "post-hoc comparison of infrastructure change"
+      path: null
+
+# -----------------------------------------------------------------------------
+# Local storage layout (AGENTS.md §15 — contents are git-ignored)
+# -----------------------------------------------------------------------------
+paths:
+  raw: "data/raw"
+  interim: "data/interim"
+  processed: "data/processed"
+  samples: "data/samples"
+  models: "models"
+  artifacts: "artifacts"
