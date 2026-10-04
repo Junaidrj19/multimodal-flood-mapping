@@ -16,5 +16,34 @@ Key constraints
 * No hidden preprocessing: any step a model depends on belongs here and in
   the documented pipeline (architecture.md §4).
 
-Status: NOT IMPLEMENTED. See docs/data-contract.md for the required interface.
+Milestone 2 provides explicit, manifest-bound raster validation, masking,
+alignment and analysis-ready artifact writing. Production execution remains
+configuration- and source-product-gated.
 """
+
+from .artifacts import ProcessedArtifact
+from .config import PreprocessingConfig, load_preprocessing_config
+from .grid import AlignmentReport, AnalysisGrid, compare_grids, require_aligned
+from .inputs import ManifestSourceProduct, PreprocessingInputs
+from .pipeline import (
+    preprocess_dem,
+    preprocess_sentinel1_pair,
+    preprocess_sentinel2_pair,
+    validate_preprocessing_pair_alignment,
+)
+
+__all__ = [
+    "AlignmentReport",
+    "AnalysisGrid",
+    "ManifestSourceProduct",
+    "PreprocessingConfig",
+    "PreprocessingInputs",
+    "ProcessedArtifact",
+    "compare_grids",
+    "load_preprocessing_config",
+    "preprocess_dem",
+    "preprocess_sentinel1_pair",
+    "preprocess_sentinel2_pair",
+    "require_aligned",
+    "validate_preprocessing_pair_alignment",
+]

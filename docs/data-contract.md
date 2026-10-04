@@ -127,6 +127,72 @@ The linked provenance record always carries the mandatory challenge
 attributions and uses `artifact_type: acquisition_manifest`. A successful
 catalogue discovery does not imply a download.
 
+## 0.5 Analysis-ready preprocessing interface (Milestone 2)
+
+M2 consumes an `AcquisitionManifest` plus an explicit mapping from selected
+scene IDs to local source-product paths. It does not query a catalogue or pick
+replacement scenes:
+
+```text
+AcquisitionManifest
+  + selected scene/product IDs
+  + explicit local source paths
+        -> PreprocessingInputs
+        -> source validation
+        -> sensor-specific masking/correction gates
+        -> explicit AnalysisGrid
+        -> alignment checks and resampling
+        -> GeoTIFF + valid mask + QA JSON + provenance YAML
+```
+
+The real AOI and target grid remain unset in configuration. A production run
+therefore fails before writing an analysis-ready artifact until the caller
+supplies an AOI-bearing M1 manifest, source paths, complete target-grid
+metadata, and the unresolved product-level processing metadata.
+
+### 0.5.1 Grid and alignment
+
+`AnalysisGrid` requires CRS, resolution, affine transform, width and height.
+No CRS, origin, resolution, extent, transform tolerance or resampling method
+is invented. `compare_grids` reports CRS, dimensions, resolution, transform,
+extent and pixel-alignment checks; `require_aligned` raises an explicit
+`AlignmentError` when a comparison cannot be justified. Reprojection to a
+configured target grid records the source-grid report and method in QA and
+provenance.
+
+### 0.5.2 Sentinel-1
+
+The local Rasterio engine handles already-readable raster assets, named
+polarisation validation, invalid-pixel masking, explicit common-grid
+preparation, and either preservation of a source-calibrated representation or
+an explicitly requested linear-to-dB conversion. It does not claim to perform
+SNAP-grade orbit-file application, radiometric calibration, or terrain
+correction. Those states must be established in explicit source metadata, or
+the run fails rather than guessing. Pair registration also requires explicit
+`pair_geometry_verified: true` metadata.
+
+### 0.5.3 Sentinel-2
+
+Required named bands and any pixel-quality mask are configured explicitly.
+Quality masks use configured valid values and are propagated as a separate
+valid-observation mask. Scene-level catalogue cloud percentage is preserved as
+metadata and is never used as AOI cloud percentage. If no pixel-level quality
+mask is supplied, QA records that it was unavailable; no cloud threshold or
+clear-sky conclusion is invented.
+
+### 0.5.4 DEM and artifacts
+
+DEM preprocessing accepts only source metadata identifying the configured
+`Copernicus WorldDEM-30` product, including an exact source product ID and
+version. Vertical datum is preserved when available and represented as
+unknown otherwise. M2 does not derive slope, flow paths, hydrology or
+settlement results.
+
+Each successful output consists of a raster, a `1=valid observation` mask, a
+machine-readable QA JSON file, and a YAML `ArtifactProvenance` record with
+`artifact_type: preprocessed_raster`, the M1 acquisition manifest ID, source
+product IDs, preprocessing/configuration versions, operations, and QA values.
+
 ---
 
 ## 1. Sentinel-1 (SAR)
@@ -218,8 +284,13 @@ This is a hard scientific constraint, not a preference:
 ```text
 data/interim/<aoi>/<event_date>/sentinel1/
   ├── before_<scene_id>.tif        # aligned to target grid
+  ├── before_<scene_id>_valid_mask.tif
+  ├── before_<scene_id>_quality.json
+  ├── before_<scene_id>_provenance.yaml
   ├── after_<scene_id>.tif
-  └── provenance.yaml              # ArtifactProvenance, artifact_type=preprocessed_raster
+  ├── after_<scene_id>_valid_mask.tif
+  ├── after_<scene_id>_quality.json
+  └── after_<scene_id>_provenance.yaml # ArtifactProvenance, preprocessed_raster
 ```
 
 Provenance **REQUIRED** fields: both scene IDs, both acquisition timestamps,
@@ -286,10 +357,13 @@ CRS and resolution.
 ```text
 data/interim/<aoi>/<event_date>/sentinel2/
   ├── before_<scene_id>.tif
+  ├── before_<scene_id>_valid_mask.tif # 1 = valid observation
+  ├── before_<scene_id>_quality.json
+  ├── before_<scene_id>_provenance.yaml
   ├── after_<scene_id>.tif
-  ├── valid_mask_before.tif        # 1 = valid observation
-  ├── valid_mask_after.tif
-  └── provenance.yaml
+  ├── after_<scene_id>_valid_mask.tif
+  ├── after_<scene_id>_quality.json
+  └── after_<scene_id>_provenance.yaml
 ```
 
 ---
@@ -340,8 +414,10 @@ to document method and reason.
 ```text
 data/interim/<aoi>/dem/
   ├── elevation.tif                # aligned to target grid
-  ├── <derivative>.tif             # only those actually used
-  └── provenance.yaml              # dem_version REQUIRED
+  ├── elevation_valid_mask.tif     # 1 = valid observation
+  ├── elevation_quality.json
+  ├── elevation_provenance.yaml    # dem_version REQUIRED
+  └── <derivative>.tif             # only those actually used later
 ```
 
 ---

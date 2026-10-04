@@ -11,12 +11,15 @@ requires-python = ">=3.11"
 license = { text = "TODO: license not yet chosen for this repository" }
 authors = [{ name = "Mohammed Junaid" }]
 
-# Runtime dependencies for the implemented acquisition and provenance stages.
-# Dependencies for later geospatial/model stages remain deliberately deferred.
+# Runtime dependencies for the implemented acquisition, provenance and M2
+# raster-preprocessing stages. Dependencies for later vector/model stages
+# remain deliberately deferred.
 dependencies = [
+    "numpy>=1.26",
     "pydantic>=2",
     "pyyaml>=6",
     "requests>=2.31",
+    "rasterio>=1.4",
 ]
 
 [project.optional-dependencies]
@@ -25,10 +28,10 @@ dev = [
     "black>=24",
 ]
 
-# Geospatial stack — DECLARED BUT NOT INSTALLED, AND NOT YET PINNED.
+# Additional geospatial stack — declared but not installed by the base M2
+# implementation, and not yet pinned.
 #
-# No module in this repository imports any of these yet. They are listed so a
-# subsequent agent knows the intended stack, not because they are in use.
+# M2 uses rasterio directly. These remain listed for later vector/array stages.
 #
 # TODO(verify-before-use): pin exact versions only after verifying, on the
 # target Python and OS, that:

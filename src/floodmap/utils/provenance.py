@@ -27,7 +27,9 @@ Two design decisions worth stating
 
 Status
 ------
-The acquisition stage populates ACQUISITION_MANIFEST records.
+The acquisition stage populates ACQUISITION_MANIFEST records and the M2
+preprocessing stage populates PREPROCESSED_RASTER records linked to those
+manifests.
 """
 
 from __future__ import annotations
@@ -289,6 +291,22 @@ class ArtifactProvenance(BaseModel):
     production_inputs: List[ProductionInput] = Field(
         default_factory=list,
         description="Permitted production sources that contributed to this artifact.",
+    )
+    acquisition_manifest_id: Maybe = Field(
+        default=None,
+        description="M1 acquisition manifest artifact ID that selected the source products.",
+    )
+    source_product_ids: List[str] = Field(
+        default_factory=list,
+        description="Exact source product IDs consumed to create this artifact.",
+    )
+    preprocessing_operations: List[str] = Field(
+        default_factory=list,
+        description="Ordered, explicit operations applied during preprocessing.",
+    )
+    quality: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Machine-readable preprocessing quality and alignment results.",
     )
 
     # --- how it was produced ---------------------------------------------
