@@ -40,6 +40,42 @@ from typing import Any, Dict, List, Optional, Union
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+# =============================================================================
+# Mandatory attribution (AGENTS.md §18)
+#
+# VERIFIED(spec). Every submitted artifact, dashboard view and situation report
+# must carry these three strings. This module is the ENFORCING copy: every
+# ``ArtifactProvenance`` attaches them automatically, and the validator below
+# re-inserts any that a caller omits, so an artifact cannot be produced without
+# them. ``configs/data.yaml`` carries a mirror copy for config consumers, and
+# ``tests/test_configs.py`` asserts the two are byte-identical.
+#
+# DISCREPANCY NOTE (unresolved — do not "tidy" without checking the spec PDF):
+# the WorldDEM-30 string retains "© DLR e.V.", matching AGENTS.md §18 and
+# README.md §12. A later restatement of the specification omitted that "©". The
+# form with "©" is used because AGENTS.md is this project's declared source of
+# truth (§2), and dropping a copyright mark from a required attribution is a
+# legal defect rather than a stylistic choice. Confirm before submission.
+# =============================================================================
+
+SENTINEL_ATTRIBUTION = "Contains modified Copernicus Sentinel data 2026."
+
+WORLDDEM_ATTRIBUTION = (
+    "Produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and "
+    "© Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by "
+    "the European Union and ESA; all rights reserved."
+)
+
+OSM_ATTRIBUTION = "© OpenStreetMap contributors."
+
+#: Required in this order on every artifact. Order is part of the contract so
+#: that rendered output is deterministic and diffable.
+REQUIRED_ATTRIBUTIONS: tuple[str, ...] = (
+    SENTINEL_ATTRIBUTION,
+    WORLDDEM_ATTRIBUTION,
+    OSM_ATTRIBUTION,
+)
+
 
 class ProductionInput(str, Enum):
     """Data sources permitted in the production pipeline.
@@ -258,6 +294,38 @@ class ArtifactProvenance(BaseModel):
         ),
     )
     notes: str = ""
+
+    # --- mandatory attribution (AGENTS.md §18) ----------------------------
+    attribution: List[str] = Field(
+        default_factory=lambda: list(REQUIRED_ATTRIBUTIONS),
+        description=(
+            "Required challenge attributions, attached automatically. Extra "
+            "entries (e.g. training-dataset citations) may be appended; the "
+            "required strings cannot be removed."
+        ),
+    )
+
+    @field_validator("attribution")
+    @classmethod
+    def _required_attributions_are_always_present(cls, v: List[str]) -> List[str]:
+        """Re-insert any required attribution a caller omitted.
+
+        This injects rather than raises on purpose. The goal is that an artifact
+        is *incapable* of being produced without attribution, including when a
+        caller passes a partial list in order to append a dataset citation.
+        Raising would make the common case (append one extra line) require
+        re-listing all three, which invites copy-paste drift.
+
+        Required strings come first, in ``REQUIRED_ATTRIBUTIONS`` order, so
+        rendered output is deterministic. Caller-supplied extras keep their
+        relative order. Duplicates are collapsed.
+        """
+        extras = [s for s in v if s not in REQUIRED_ATTRIBUTIONS]
+        deduped: List[str] = []
+        for item in extras:
+            if item not in deduped:
+                deduped.append(item)
+        return list(REQUIRED_ATTRIBUTIONS) + deduped
 
     @field_validator("production_inputs")
     @classmethod
