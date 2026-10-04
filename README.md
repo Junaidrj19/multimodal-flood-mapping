@@ -100,11 +100,16 @@ The challenge specifically recommends comparing Sentinel-1 acquisitions
 from the same orbit track for change detection because different tracks
 view terrain from different angles.
 
-Milestone 1 implements the metadata acquisition boundary for these inputs.
+Milestones 1 and 2 implement the metadata acquisition and analysis-ready
+preprocessing boundaries for these inputs.
 `scripts/acquire.py` accepts a caller-supplied EPSG:4326 AOI and explicit
 temporal windows, discovers CDSE Sentinel-1/Sentinel-2 metadata, applies
 deterministic selection, and writes an auditable JSON/YAML manifest. Discovery
 does not download products; downloads require the explicit `--download` flag.
+M2 consumes that manifest plus explicit local source-product paths and writes
+validated, aligned rasters, valid-observation masks, QA metadata and linked
+provenance. It does not invent the real AOI or run production preprocessing
+while the target grid and source products remain unresolved.
 
 ### Validation-only sources
 
@@ -259,7 +264,7 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 │   └── floodmap/
 │       ├── __init__.py
 │       ├── acquisition/          # CDSE provider, selection and manifests (M1)
-│       ├── preprocessing/        (empty — namespace only)
+│       ├── preprocessing/         # validation, alignment and M2 artifacts
 │       ├── features/             (empty — namespace only)
 │       ├── segmentation/         (empty — namespace only)
 │       ├── infrastructure/       (empty — namespace only)
@@ -270,13 +275,14 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 │       └── utils/
 │           ├── provenance.py     # artifact provenance schema
 │           └── config.py         # YAML configuration loader
-├── tests/                        # M0 + M1 offline tests
+├── tests/                        # M0 + M1 + M2 offline tests
 │   ├── conftest.py
 │   ├── test_package_structure.py
 │   ├── test_configs.py
 │   ├── test_provenance.py
 │   ├── test_data_boundary.py     # enforces the AGENTS.md §3 data rule
-│   └── test_acquisition_m1.py    # provider, selection and manifest tests
+│   ├── test_acquisition_m1.py    # provider, selection and manifest tests
+│   └── test_preprocessing_m2.py  # tiny synthetic raster preprocessing tests
 ├── models/                       (empty; git-ignored)
 ├── artifacts/                    (empty; git-ignored)
 ├── notebooks/                    (empty)
@@ -332,7 +338,7 @@ warning minutes before a sudden glacier collapse.
 
 ## 14. Development status
 
-Current phase: **Milestone 1 complete — Earth Observation acquisition.**
+Current phase: **Milestone 2 complete — Earth Observation preprocessing.**
 
 ### What exists
 
@@ -347,6 +353,7 @@ Current phase: **Milestone 1 complete — Earth Observation acquisition.**
 | `floodmap.utils.provenance` — artifact provenance schema | **Done** |
 | `floodmap.utils.config` — configuration loader | **Done** |
 | Milestone 1 EO acquisition provider, selection and manifest | **Done** (offline; AOI/windows remain operator inputs) |
+| Milestone 2 raster validation, masking, alignment and artifacts | **Done** (synthetic fixtures; production inputs/grid remain unresolved) |
 | Test infrastructure incl. data-boundary guard | **Done** |
 
 ### What does NOT exist
@@ -354,7 +361,6 @@ Current phase: **Milestone 1 complete — Earth Observation acquisition.**
 The following later stages are not implemented. Their corresponding
 `src/floodmap/` subpackages remain documented namespaces with no logic:
 
-- Preprocessing and co-registration
 - Feature construction
 - Flood/debris segmentation model (**no architecture selected** — `AGENTS.md` §5)
 - Infrastructure exposure analysis
@@ -408,7 +414,7 @@ See `docs/dataset-registry.md` §5 for the full list.
 2.  Data provenance and legality checks — **partially done** (contract and
     registry written; licenses still require verification)
 3.  Acquisition — **done (Milestone 1: metadata discovery and manifest)**
-4.  Preprocessing — not started
+4.  Preprocessing — **done (Milestone 2: analysis-ready raster boundary)**
 5.  Segmentation baseline — not started (**unblocked**: permitted datasets are
     now specified; label semantics still to confirm)
 6.  Unseen-Himalaya evaluation — blocked
@@ -454,8 +460,7 @@ downloads are intentionally enabled and CDSE credentials are available through
 empty results, rejected candidates, and download `NOT_ATTEMPTED` states
 separately.
 
-The geospatial stack (`rasterio`, `geopandas`, `pyproj`, `rioxarray`, `osmnx`)
-is declared in `pyproject.toml` under the `geo` extra but is **deliberately
-unpinned and not installed**: no module imports it yet, and pinning untested
-versions would be a false claim about the environment. Pin it in the milestone
-that first needs it.
+Rasterio is a runtime dependency for M2 raster validation, masking, alignment
+and GeoTIFF artifact writing. The remaining geospatial stack
+(`rioxarray`, `xarray`, `geopandas`, `shapely`, `pyproj`, `osmnx`, `networkx`)
+remains under the optional `geo` extra and is not required by the M2 engine.

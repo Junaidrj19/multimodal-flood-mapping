@@ -23,6 +23,9 @@ target_grid:
                             # area/length computation; the specific EPSG code must be
                             # chosen for the AOI rather than assumed.
   resolution_m: null        # TODO(verify)
+  transform: null           # REQUIRED for a production run; six affine coefficients
+  width: null               # REQUIRED for a production run
+  height: null              # REQUIRED for a production run
   # Resampling must never be silent (AGENTS.md §7).
   resampling:
     continuous: null        # TODO: e.g. bilinear/cubic for backscatter, reflectance
@@ -39,6 +42,7 @@ alignment_checks:
   verify_extent: true
   verify_pixel_alignment: true
   verify_acquisition_geometry: true
+  transform_tolerance: null # Do not invent a registration tolerance.
   # Explicit failure beats a misleading map (architecture.md §17).
   on_failure: "fail"        # fail | warn
 
@@ -59,6 +63,12 @@ sentinel1:
     terrain_correction: null
     convert_to_db: null
   nodata_value: null        # TODO(verify)
+  required_polarizations: null  # Must be read from the selected product/config.
+  radiometric_calibration: null # source_calibrated | linear_to_db; unresolved.
+  terrain_correction: null      # source_terrain_corrected | external_tool; unresolved.
+  resampling: null              # Explicit rasterio method; no default.
+  invalid_pixel_policy: "mask"
+  output_nodata: null
   # AGENTS.md §4 / architecture.md §3
   same_track_only: true
 
@@ -76,11 +86,25 @@ sentinel2:
   # interpolated cloud gap could be mistaken for an observation.
   invalid_pixel_policy: "mask"   # mask | interpolate — interpolate requires justification
   nodata_value: null
+  required_bands: null          # Band names/order must be established from data.
+  quality_mask:
+    enabled: null
+    band_name: null
+    valid_values: null
+  reflectance_scale: null       # Use only when source metadata establishes it.
+  reflectance_offset: null
+  resampling: null              # Explicit method per source/band family.
+  output_nodata: null
 
 # -----------------------------------------------------------------------------
 # DEM
 # -----------------------------------------------------------------------------
 dem:
+  source_product: "Copernicus WorldDEM-30"
+  version: null                 # Read from the delivered asset/provider metadata.
+  vertical_datum: null         # Required when available; never inferred.
+  resampling: null              # Explicit continuous-data method.
+  output_nodata: null
   steps:
     reproject_to_target_grid: null
     fill_voids: null
