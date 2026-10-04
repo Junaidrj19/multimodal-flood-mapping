@@ -359,16 +359,40 @@ documented namespaces with no logic:
 **No model has been trained and no performance has been measured.** Any
 performance figure anywhere in this repository would be fabricated.
 
-### Known blocking gap
+### Resolved by the official specification
 
-The official Track B challenge specification that `AGENTS.md` §2 names as the
-primary requirement source is **not present in this repository**. As a result
-the **permitted training dataset list is UNKNOWN**, which blocks the
-segmentation and evaluation milestones. See `docs/dataset-registry.md` §1.5.
+The official Track B challenge specification has been supplied. It fixes, and
+this repository now records as VERIFIED(spec):
 
-The AOI geometry, exact event date, target grid CRS/resolution, DEM product
-variant and reference hub definition are likewise unresolved and recorded as
-TODO rather than guessed.
+| Item | Value |
+|---|---|
+| Event date | 2026-08-26 (Trishuli flood, Nepal) |
+| Pre-event OSM snapshot | 2026-07-27, via the ohsome API |
+| DEM source | Copernicus WorldDEM-30 |
+| Permitted training datasets | Kuro Siwo (required), Sen1Floods11 (optional) |
+| EMSR927 | Validation only; prohibited as a production input |
+| Attribution | Three mandatory strings, enforced in code |
+
+This clears the previously reported blocking gap on the training dataset list.
+
+### Remaining unresolved items
+
+Still recorded as TODO/UNKNOWN rather than guessed: AOI geometry, acquisition
+search window, target grid CRS/resolution, DEM delivered grid and vertical
+datum, Sentinel-1 product type and polarisations, Sentinel-2 processing level
+and band set, and the reference hub definition.
+
+Two scientific unknowns matter more than the rest, and neither is resolvable by
+reading the specification:
+
+1.  **Whether Kuro Siwo labels debris/sediment separately from water.** Track B
+    asks for flood *and* debris. If the permitted labels do not distinguish
+    them, the debris class has no training signal and the product claim narrows
+    to flood water. See `docs/scientific-assumptions.md` §9.
+2.  **How Kuro Siwo and Sen1Floods11 label definitions reconcile**, if both are
+    used. Two corpora can disagree about what counts as water at a boundary.
+
+See `docs/dataset-registry.md` §5 for the full list.
 
 ### Progress order
 
@@ -377,7 +401,8 @@ TODO rather than guessed.
     registry written; licenses still require verification)
 3.  Acquisition — not started
 4.  Preprocessing — not started
-5.  Segmentation baseline — **blocked** on the permitted dataset list
+5.  Segmentation baseline — not started (**unblocked**: permitted datasets are
+    now specified; label semantics still to confirm)
 6.  Unseen-Himalaya evaluation — blocked
 7.  Infrastructure impact — not started
 8.  Road-network connectivity — not started

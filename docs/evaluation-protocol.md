@@ -42,9 +42,12 @@ does it work on Himalayan terrain it has never seen?"**
 | **validation** | Model selection, hyperparameters, early stopping, checkpoint selection, **decision threshold**. | Yes — this is its job. |
 | **unseen_himalaya_test** | Final reported generalisation performance. | **No. Never.** |
 
-Configured in `configs/evaluation.yaml → splits`. Dataset and scene lists are
-currently empty: the permitted training datasets are **UNKNOWN (blocking)**
-(`docs/dataset-registry.md` §1.5).
+Configured in `configs/evaluation.yaml → splits`. The permitted datasets are
+now specified — Kuro Siwo and Sen1Floods11 (`docs/dataset-registry.md` §1.5)
+— but the scene lists remain empty, because populating a split requires the
+actual scene geometries and any official splits the datasets ship with.
+Inventing split membership now would be the leakage risk this protocol
+exists to prevent.
 
 ### 2.2 Splits must be spatial, not random
 
@@ -318,12 +321,13 @@ Every evaluation result carries an `ArtifactProvenance` record
 
 ## 10. Blocking items
 
-1. **Permitted training dataset list** — UNKNOWN (blocking). Without it, splits
-   cannot be populated and the class set cannot be defined.
-2. **Himalayan evaluation scenes** — not identified; depends on item 1 and on
-   AOI definition.
+1. **Official dataset splits** — if Kuro Siwo or Sen1Floods11 ship their own
+   train/val/test splits, they must be honoured; ignoring them risks reusing
+   upstream test scenes as our training data. Unknown until acquired.
+2. **Himalayan evaluation scenes** — not identified; requires dataset scene
+   geometry and the AOI definition.
 3. **Spatial buffer between splits** — TODO; requires scene geometry.
 4. **Threshold selection criterion** — TODO; must be declared before the sweep.
-5. **Class set** — depends on whether permitted labels distinguish flood water
+5. **Class set** — depends on whether Kuro Siwo labels distinguish flood water
    from debris. If they do not, the product claim narrows to flood water
    (`docs/scientific-assumptions.md` §9).

@@ -21,22 +21,35 @@ place. `tests/test_data_boundary.py` enforces the boundary mechanically.
 | `citation` | Required attribution/citation. |
 | `temporal_requirement` | Constraint on acquisition/snapshot time. |
 | `spatial_information` | CRS / resolution / extent, where known. |
-| `status` | `VERIFIED` · `TODO(verify)` · `UNKNOWN (blocking)` · `NOT ACQUIRED`. |
+| `status` | `VERIFIED` · `VERIFIED(spec)` · `TODO(verify)` · `UNKNOWN (blocking)` · `NOT ACQUIRED`. |
 | `notes` | Caveats. |
 
 ### Status vocabulary
 
 - **VERIFIED** — confirmed against an authoritative source and safe to rely on.
+- **VERIFIED(spec)** — fixed by the official Track B challenge specification.
+  Authoritative for *what we are required to use*. It does **not** certify any
+  property that can only be measured from the delivered asset.
 - **TODO(verify)** — recorded for orientation; **not** yet confirmed.
 - **UNKNOWN (blocking)** — cannot be determined from available information and
   blocks a downstream milestone.
 - **NOT ACQUIRED** — permitted and understood, but no data retrieved yet.
 
-> **Nothing in this registry is marked VERIFIED.** The official Track B
-> challenge specification named by `AGENTS.md` §2 as the primary requirement
-> source is not present in this repository, and no data has been acquired. Per
-> `AGENTS.md` §11, an AI-generated statement is not scientific validation, so no
-> row may be promoted to VERIFIED on the strength of this document alone.
+> **Partially verified as of the official Track B specification.** The
+> specification has now been supplied and fixes the following, which are marked
+> **VERIFIED(spec)** below: the event date (2026-08-26), the pre-event OSM
+> snapshot date (2026-07-27, via the ohsome API), the DEM source (Copernicus
+> WorldDEM-30), the permitted training dataset list (Kuro Siwo, Sen1Floods11),
+> EMSR927's classification as validation-only, and the three mandatory
+> attribution strings.
+>
+> **VERIFIED(spec) means "fixed by the specification", not "measured from the
+> data."** No data has been acquired. Every property that must come from the
+> asset itself — delivered resolution, CRS, vertical datum, band set, orbit
+> track, class balance, tile geometry — remains `TODO(verify)` and must be read
+> from the downloaded product, not inferred from a product name. Per
+> `AGENTS.md` §11 an AI-generated statement is not scientific validation, so no
+> row is promoted beyond what the specification actually states.
 
 ---
 
@@ -76,46 +89,68 @@ place. `tests/test_data_boundary.py` enforces the boundary mechanically.
 
 | Field | Value |
 |---|---|
-| **dataset** | Copernicus DEM. Exact product/variant TODO(verify); `README.md` §12 attribution indicates **WorldDEM-30**. |
+| **dataset** | **Copernicus WorldDEM-30** — VERIFIED(spec). |
 | **purpose** | Terrain context, slope/elevation features, optional downstream flood-path tracing. |
 | **allowed_as_input** | **YES** |
 | **validation_only** | NO |
 | **license** | COPERNICUS WorldDEM-30 terms via EU/ESA. TODO(verify) redistribution limits before committing any sample to Git. |
-| **citation** | "Produced using Copernicus WorldDEM-30 © DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018 provided under COPERNICUS by the European Union and ESA; all rights reserved." |
+| **citation** | VERIFIED(spec), mandatory: "Produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved." Enforced by `provenance.REQUIRED_ATTRIBUTIONS`. |
 | **temporal_requirement** | Represents **pre-event** terrain. Acquisition epoch 2010–2018 per the attribution. |
-| **spatial_information** | TODO(verify) — ~30 m implied by the product name; **confirm**. Vertical datum TODO(verify). |
-| **status** | **NOT ACQUIRED** / TODO(verify) |
+| **spatial_information** | TODO(verify) — ~30 m is implied by the product *name*, which is not a measurement. Delivered grid, CRS and vertical datum must be read from the asset. |
+| **status** | **VERIFIED(spec)** source · **NOT ACQUIRED** · grid/datum TODO(verify) |
 | **notes** | The DEM is a terrain *prior*, not a current observation: an avalanche and debris flow changes real terrain. 30 m cannot resolve individual road cuttings or narrow channels. Vertical datum errors are metre-scale and directly affect flood-path inference. |
 
 ### 1.4 OpenStreetMap — pre-event snapshot
 
 | Field | Value |
 |---|---|
-| **dataset** | OpenStreetMap historical extract, snapshot date TODO (must be < event date). |
+| **dataset** | OpenStreetMap historical extract via the **ohsome API**, snapshot **2026-07-27** — VERIFIED(spec). |
 | **purpose** | Pre-event buildings, roads, bridges for exposure and network analysis. |
 | **allowed_as_input** | **YES — pre-event snapshot only** |
 | **validation_only** | NO (but see 2.5 for post-event edits) |
 | **license** | ODbL 1.0. TODO(verify) share-alike implications for derived published outputs. |
-| **citation** | "© OpenStreetMap contributors." |
-| **temporal_requirement** | **Snapshot must predate the event.** Hard rule (`AGENTS.md` §3). |
+| **citation** | VERIFIED(spec), mandatory: "© OpenStreetMap contributors." Enforced by `provenance.REQUIRED_ATTRIBUTIONS`. |
+| **temporal_requirement** | **Snapshot must predate the event.** Hard rule (`AGENTS.md` §3). Satisfied: 2026-07-27 < 2026-08-26, a 30-day margin. |
 | **spatial_information** | Vector, EPSG:4326 native; reprojected for any length/area computation. |
-| **status** | **NOT ACQUIRED** / TODO(verify) extract source |
-| **notes** | Coverage in rural Nepal is uneven; absence of a road in OSM is not evidence the road does not exist. Omissions bias exposure counts **downward** and may hide genuinely cut-off settlements. OSM carries no reliable population data. |
+| **status** | **VERIFIED(spec)** snapshot date and source · **NOT ACQUIRED** |
+| **notes** | The ohsome API serves time-sliced OSM *history*, so it can return a genuine 2026-07-27 state rather than a current-day extract — this is why it satisfies §3 where a plain planet extract would not. The returned snapshot timestamp must be checked against the request, not assumed. Coverage in rural Nepal is uneven; absence of a road in OSM is not evidence the road does not exist. Omissions bias exposure counts **downward** and may hide genuinely cut-off settlements. OSM carries no reliable population data. |
 
 ### 1.5 Permitted training datasets
 
+The permitted list is **closed and VERIFIED(spec)**: Kuro Siwo and
+Sen1Floods11. Training on any dataset outside this list violates `AGENTS.md`
+§3. The machine-readable list lives at
+`configs/data.yaml:production.training_datasets.allowed_training_datasets`.
+
+#### 1.5.1 Kuro Siwo
+
 | Field | Value |
 |---|---|
-| **dataset** | **UNKNOWN (blocking)** |
-| **purpose** | Training and validating the flood/debris segmentation model. |
-| **allowed_as_input** | YES — but **only** those on the official permitted list |
+| **dataset** | **Kuro Siwo** — VERIFIED(spec). Release/version TODO(verify) at download. |
+| **purpose** | Primary training and validation source for flood/debris segmentation. |
+| **allowed_as_input** | **YES** — production training input |
 | **validation_only** | NO |
-| **license** | UNKNOWN |
-| **citation** | UNKNOWN — `AGENTS.md` §18 requires citation per each dataset's license and paper |
-| **temporal_requirement** | UNKNOWN |
-| **spatial_information** | UNKNOWN |
-| **status** | **UNKNOWN (blocking)** |
-| **notes** | `README.md` §4 and `PRD.md` §8 refer to "listed permitted training datasets" but **no document in this repository enumerates them**, and the official challenge specification is absent. This blocks the segmentation milestone. It must not be resolved by selecting a well-known flood dataset from memory: an unlisted dataset would violate `AGENTS.md` §3. Required per dataset once supplied: source, license, citation, label definitions, flood-vs-debris class coverage, modalities, expected preprocessing, official splits. See `docs/data-contract.md` §5. |
+| **license** | MIT / CC BY — VERIFIED(spec) as stated. TODO(verify) **which** applies to code versus data before redistributing either; the spec records both identifiers without splitting them. |
+| **citation** | Bountos et al., 2024 (NeurIPS 2024). TODO(verify) full bibliographic entry from the paper itself before publication. |
+| **temporal_requirement** | None — a training corpus, not an event observation. Its scenes are unrelated to the 2026-08-26 event and must never be mixed into the event's pre/post pair. |
+| **spatial_information** | TODO(verify) — CRS, tile geometry, resolution and SAR product level must be read from the delivered dataset. |
+| **status** | **VERIFIED(spec)** permitted · **NOT ACQUIRED** · properties TODO(verify) |
+| **notes** | Permission to use is settled; suitability is not. Open and blocking for the segmentation milestone: does it label **debris/sediment separately from water**, or only water? Track B requires flood *and* debris. If it labels water only, the debris class has no training signal from this source and that limitation must be stated in the report rather than papered over. Also unknown: class balance, geographic coverage (Himalayan terrain represented or not), and whether official splits exist that must be honoured to avoid leakage. See `docs/evaluation-protocol.md`. |
+
+#### 1.5.2 Sen1Floods11
+
+| Field | Value |
+|---|---|
+| **dataset** | **Sen1Floods11** — VERIFIED(spec). Release/version TODO(verify) at download. |
+| **purpose** | Optional supplementary training data for flood/water segmentation. |
+| **allowed_as_input** | **YES** — optional training input |
+| **validation_only** | NO |
+| **license** | CC BY 4.0 — VERIFIED(spec). Attribution required on derived outputs. |
+| **citation** | Bonafilia et al., 2020 (CVPRW 2020). TODO(verify) full bibliographic entry from the paper itself before publication. |
+| **temporal_requirement** | None — a training corpus. Its scenes are unrelated to the 2026-08-26 event. |
+| **spatial_information** | TODO(verify) — CRS, chip size, resolution and band set must be read from the delivered dataset. |
+| **status** | **VERIFIED(spec)** permitted · **OPTIONAL** · **NOT ACQUIRED** · properties TODO(verify) |
+| **notes** | Marked optional by the specification, so it is a deliberate choice rather than a default. It is a **surface-water** dataset; it is unlikely to carry a debris class, so it cannot resolve the debris-label gap above. Combining it with Kuro Siwo introduces a real risk of **label-definition mismatch** — two corpora can disagree on what counts as "water" at a boundary. Any combined training run must document the harmonisation rule and must not silently union incompatible label schemes. Its geographic distribution is global and may under-represent steep terrain. |
 
 ---
 
@@ -133,16 +168,16 @@ place. `tests/test_data_boundary.py` enforces the boundary mechanically.
 
 | Field | Value |
 |---|---|
-| **dataset** | Copernicus Emergency Management Service activation EMSR927. |
+| **dataset** | Copernicus Emergency Management Service activation EMSR927 — VERIFIED(spec) as the activation for this event. |
 | **purpose** | Post-hoc comparison for the Trishuli case study (`PRD.md` FR-13). |
-| **allowed_as_input** | **NO** |
-| **validation_only** | **YES** |
+| **allowed_as_input** | **NO** — VERIFIED(spec): explicitly prohibited as a production input. |
+| **validation_only** | **YES** — VERIFIED(spec). |
 | **license** | TODO(verify) Copernicus EMS terms. |
 | **citation** | TODO(verify) required EMS attribution form. |
 | **temporal_requirement** | Post-event. Read only after our prediction exists. |
 | **spatial_information** | TODO — not acquired. |
-| **status** | **NOT ACQUIRED** |
-| **notes** | Agreement with EMSR927 is a **comparison, not ground truth**: it carries its own method, timing and interpretation assumptions, so disagreement is not automatically our error. The dashboard must not visually imply EMSR927 is an input layer (`AGENTS.md` §16). |
+| **status** | **VERIFIED(spec)** classification · **NOT ACQUIRED** |
+| **notes** | The specification settles the *rule* (validation only), which is now enforced by `ValidationOnlySource.EMSR927` and by `tests/test_data_boundary.py`. It does not make EMSR927 ground truth: agreement is a **comparison**, since it carries its own method, timing and interpretation assumptions, so disagreement is not automatically our error. The dashboard must not visually imply EMSR927 is an input layer (`AGENTS.md` §16). |
 
 ### 2.2 UNOSAT damage maps
 
@@ -197,10 +232,11 @@ place. `tests/test_data_boundary.py` enforces the boundary mechanically.
 |---|---|---|---|
 | Sentinel-1 | YES | NO | NOT ACQUIRED |
 | Sentinel-2 | YES | NO | NOT ACQUIRED |
-| Copernicus DEM (WorldDEM-30, TODO variant) | YES | NO | NOT ACQUIRED |
-| OSM — pre-event snapshot | YES | NO | NOT ACQUIRED |
-| Permitted training datasets | YES (list unknown) | NO | **UNKNOWN (blocking)** |
-| EMSR927 | **NO** | YES | NOT ACQUIRED |
+| Copernicus WorldDEM-30 | YES | NO | VERIFIED(spec) · NOT ACQUIRED |
+| OSM — pre-event snapshot (2026-07-27, ohsome) | YES | NO | VERIFIED(spec) · NOT ACQUIRED |
+| Kuro Siwo | YES (required) | NO | VERIFIED(spec) · NOT ACQUIRED |
+| Sen1Floods11 | YES (optional) | NO | VERIFIED(spec) · NOT ACQUIRED |
+| EMSR927 | **NO** | YES | VERIFIED(spec) · NOT ACQUIRED |
 | UNOSAT | **NO** | YES | NOT ACQUIRED |
 | Other published damage maps | **NO** | YES | NOT ACQUIRED |
 | OSM — post-event edits | **NO** | YES | NOT ACQUIRED |
@@ -215,11 +251,27 @@ documented:
 - `ArtifactProvenance` rejects a validation-only source recorded as a production input.
 - `configs/data.yaml` separates `production:` from `validation_only:`.
 - `tests/test_data_boundary.py` fails if a forbidden source name appears in a production module.
+- `floodmap.utils.provenance.REQUIRED_ATTRIBUTIONS` — the three mandatory
+  attributions, attached automatically to every `ArtifactProvenance` and
+  re-inserted if a caller omits them.
 
 ## 5. Blocking items
 
-1. **Permitted training dataset list** — blocks segmentation and evaluation.
-   Requires the official challenge specification.
-2. **License verification for `data/samples/`** — before committing any sample,
+The training-dataset list is **no longer blocking** — the specification
+enumerates Kuro Siwo and Sen1Floods11 (§1.5). Remaining items:
+
+1. **Kuro Siwo label semantics** — does it label debris/sediment separately from
+   water? Blocks the *debris* half of the segmentation task, not the flood half.
+   Resolvable only by inspecting the dataset or its paper, not by assumption.
+2. **Kuro Siwo license split** — the spec records "MIT / CC BY" without saying
+   which covers code and which covers data. Blocks redistribution, not use.
+3. **Label harmonisation rule** — required before Kuro Siwo and Sen1Floods11 are
+   combined, since the two may define water boundaries differently.
+4. **Official dataset splits** — if either dataset ships splits, they must be
+   honoured to avoid leakage; unknown until acquired.
+5. **License verification for `data/samples/`** — before committing any sample,
    confirm the license permits redistribution in a public repository.
-3. **EMS/UNOSAT citation formats** — required before publishing any comparison.
+6. **EMS/UNOSAT citation formats** — required before publishing any comparison.
+7. **WorldDEM-30 attribution wording** — confirm against the official
+   specification document whether "© DLR e.V." carries the copyright mark. This
+   repository uses the form **with** the mark, per `AGENTS.md` §18.

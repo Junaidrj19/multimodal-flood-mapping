@@ -316,4 +316,4 @@ Recorded so a later agent does not mistake silence for a decision:
 | Road classes in scope | **Not decided.** Including footpaths materially changes connectivity. |
 | Reference hub definition | **Not operationalised.** |
 | Target grid CRS/resolution | **Not set.** Depends on AOI and product resolutions. |
-| Permitted training datasets | **UNKNOWN (blocking).** |
+| Permitted training datasets | **Specified:** Kuro Siwo (required), Sen1Floods11 (optional). Their label semantics are **not** yet known. |

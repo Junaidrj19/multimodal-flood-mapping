@@ -20,13 +20,20 @@ Per `AGENTS.md` §11, nothing in this document is scientific validation. Values
 marked *commonly documented* are starting points for verification, not
 established project facts.
 
-> ### Blocking gap: the challenge specification is not in this repository
+> ### Partially resolved by the official specification
 >
 > `AGENTS.md` §2 names the official Track B challenge specification as the
-> primary requirement source, but that document is **not present**. Consequently
-> the exact AOI, event dates, permitted training dataset list, required DEM
-> variant and reference hub definitions cannot be stated here. Every such field
-> is marked TODO or UNKNOWN rather than guessed.
+> primary requirement source. It has now been supplied and fixes: the event date
+> (2026-08-26), the pre-event OSM snapshot (2026-07-27, ohsome API), the DEM
+> source (Copernicus WorldDEM-30), the permitted training dataset list (Kuro
+> Siwo, Sen1Floods11), EMSR927 as validation-only, and the three mandatory
+> attributions. Those are marked **VERIFIED(spec)**.
+>
+> Still unresolved and therefore still TODO/UNKNOWN rather than guessed: the AOI
+> geometry, the acquisition windows around the event date, the target grid
+> CRS/resolution, the reference hub definition, and every property that can only
+> be measured from a delivered asset (delivered resolutions, CRS, vertical datum,
+> band sets, orbit tracks, dataset label semantics).
 
 ---
 
@@ -164,7 +171,9 @@ CRS and resolution.
 ### 2.3 Relevant bands
 
 - **TODO(verify).** Band selection must follow the label and feature
-  requirements of the permitted training datasets, which are UNKNOWN (see §5).
+  requirements of the permitted training datasets (Kuro Siwo, Sen1Floods11),
+  whose band/label expectations are TODO(verify) until the data is inspected
+  (see §5).
 - *Commonly documented — VERIFY*: Sentinel-2 MSI provides visible/NIR bands at
   10 m, red-edge/SWIR at 20 m, and atmospheric bands at 60 m. Any multi-band
   stack therefore requires an explicit, documented resampling decision.
@@ -324,18 +333,23 @@ dependency set is pinned.
 
 ## 5. Training datasets
 
-> ### UNKNOWN (blocking)
+> ### VERIFIED(spec) — list resolved, properties not
 >
-> `README.md` §4 and `PRD.md` §8 both refer to "listed permitted training
-> datasets", but **no document in this repository enumerates them**, and the
-> official challenge specification that would is absent.
+> The official Track B specification enumerates the permitted training
+> datasets: **Kuro Siwo** (production training input, MIT / CC BY, Bountos et
+> al., 2024, NeurIPS 2024) and **Sen1Floods11** (optional training input, CC BY
+> 4.0, Bonafilia et al., 2020, CVPRW 2020). The list is **closed** — training
+> on anything outside it violates `AGENTS.md` §3.
 >
-> This blocks the segmentation milestone. It cannot be resolved by choosing a
-> well-known flood segmentation dataset from memory: using a dataset that is not
-> on the permitted list would violate `AGENTS.md` §3.
+> This resolves the previous UNKNOWN (blocking) on *which* datasets. It does
+> **not** resolve their contents. Nothing below may be filled in from memory of
+> these datasets' papers: every property must be read from the delivered data.
+>
+> Open and material: whether Kuro Siwo distinguishes debris/sediment from water.
+> Track B requires both. See `docs/dataset-registry.md` §1.5.
 
-The contract below therefore specifies **what must be recorded for each dataset
-once the list is supplied**, not which datasets they are.
+The contract below specifies **what must be recorded for each of the two
+datasets before it is used**, and applies to both equally.
 
 ### 5.1 Source
 
@@ -415,12 +429,12 @@ These hold across every source and are the contract's non-negotiable core:
 
 | # | Question | Blocks |
 |---|---|---|
-| 1 | Permitted training dataset list | Segmentation, evaluation |
+| 1 | Kuro Siwo label semantics: is debris/sediment distinct from water? | Debris class, product claim |
 | 2 | AOI geometry and canonical representation | Acquisition |
-| 3 | Exact event date and pre/post windows | Acquisition |
+| 3 | Pre/post acquisition windows around 2026-08-26 | Acquisition |
 | 4 | Target grid CRS and resolution | Preprocessing |
-| 5 | Copernicus DEM product/variant and vertical datum | DEM handling, hydrology bonus |
-| 6 | Historical OSM extract source | OSM acquisition |
+| 5 | WorldDEM-30 delivered grid and vertical datum | DEM handling, hydrology bonus |
+| 6 | ohsome API query shape and snapshot verification | OSM acquisition |
 | 7 | In-scope `highway` classes | Network analysis |
 | 8 | Road buffer width + sensitivity range | Infrastructure exposure |
 | 9 | Reference hub definition (nearest town/hospital) | Connectivity analysis |
