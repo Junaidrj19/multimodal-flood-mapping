@@ -1,0 +1,148 @@
+# =============================================================================
+# configs/evaluation.yaml — evaluation protocol configuration
+#
+# STATUS: structural placeholder.
+#
+# AGENTS.md §6: evaluation must be independent of training. Report confusion and
+# error patterns, not only one headline score. A strong score on an easy random
+# split is not sufficient evidence of Himalayan generalisation.
+#
+# NO METRIC TARGETS ARE SET HERE. Choosing a "good" IoU before measuring a
+# baseline would be an invented threshold. See docs/evaluation-protocol.md.
+# =============================================================================
+
+version: 0.1.0
+
+# -----------------------------------------------------------------------------
+# Splits
+#
+# UNKNOWN (blocking) until the permitted training datasets are enumerated.
+# Splitting must be spatial/scene-level, not random pixel or random tile:
+# neighbouring pixels and overlapping tiles are strongly correlated, so a random
+# split leaks information across splits and inflates scores.
+# -----------------------------------------------------------------------------
+splits:
+  strategy: "scene_level_spatial"   # scene_level_spatial | geographic_block
+  # Explicitly NOT permitted: random pixel/tile splits across one scene.
+  forbid_random_pixel_split: true
+  train:
+    datasets: []
+    scenes: []
+  validation:
+    datasets: []
+    scenes: []
+    purpose: >-
+      Model selection, hyperparameter choice, early stopping and decision
+      threshold selection happen here and ONLY here.
+  # The headline generalisation test.
+  unseen_himalaya_test:
+    datasets: []
+    scenes: []
+    purpose: >-
+      Final reporting only. Used once, after all tuning is frozen.
+    # AGENTS.md §5: do not tune on the final unseen-Himalaya evaluation set.
+    may_be_used_for_tuning: false
+    may_be_used_for_threshold_selection: false
+    may_be_used_for_checkpoint_selection: false
+
+# -----------------------------------------------------------------------------
+# Leakage prevention
+# -----------------------------------------------------------------------------
+leakage_controls:
+  # Fail loudly if the same scene identifier appears in more than one split.
+  assert_disjoint_scene_ids: true
+  # Geographically adjacent tiles across splits still leak. A buffer between
+  # split regions is the mitigation; the distance must be chosen with the data.
+  assert_spatial_disjoint: true
+  spatial_buffer_m: null        # TODO: set when scene geometry is known
+  # Normalisation statistics must come from the training split only.
+  assert_normalisation_from_train_only: true
+  # Validation-only references must never influence the prediction path.
+  assert_no_validation_source_in_production: true
+
+# -----------------------------------------------------------------------------
+# Metrics — required by AGENTS.md §6 and PRD.md §11
+# -----------------------------------------------------------------------------
+metrics:
+  required:
+    - iou
+    - dice_f1
+    - precision
+    - recall
+  per_class: true
+  # Report the full confusion matrix, not just aggregates (AGENTS.md §6).
+  confusion_matrix: true
+  # No pass/fail thresholds. A target set before a baseline exists is arbitrary.
+  targets: null
+  # How aggregates are formed matters: macro and micro differ sharply under class
+  # imbalance, and flood pixels are typically a small minority.
+  averaging:
+    - macro
+    - micro
+  report_support: true
+
+# -----------------------------------------------------------------------------
+# Decision threshold selection
+# -----------------------------------------------------------------------------
+threshold_selection:
+  # Procedure is defined; the resulting value is not pre-set.
+  search_space: null            # TODO: e.g. a sweep over [0, 1]
+  selection_split: "validation" # never unseen_himalaya_test
+  selection_criterion: null     # TODO: state the criterion before running the sweep
+  record_sensitivity_curve: true
+
+# -----------------------------------------------------------------------------
+# Qualitative error analysis (AGENTS.md §6, PRD.md §11)
+# -----------------------------------------------------------------------------
+error_analysis:
+  enabled: true
+  stratify_by:
+    - terrain_slope
+    - elevation
+    - land_cover
+    - cloud_condition
+    - scene
+  # Known SAR confusers worth inspecting explicitly rather than aggregating away.
+  inspect_failure_modes:
+    - radar_shadow
+    - layover
+    - smooth_surface_low_backscatter
+    - permanent_water_vs_flood_water
+    - wet_soil_vs_standing_water
+    - debris_vs_bare_rock
+  export_qualitative_examples: true
+  n_examples_per_stratum: null
+
+# -----------------------------------------------------------------------------
+# Validation-only comparison (post-hoc, AFTER production prediction exists)
+# -----------------------------------------------------------------------------
+reference_comparison:
+  enabled: false
+  # architecture.md §11: these enter only the final validation/comparison branch.
+  references:
+    - name: "EMSR927"
+      role: "validation_only"
+      path: null
+  note: >-
+    Agreement with a published damage map is a comparison, not ground truth.
+    Reference products carry their own method, timing and interpretation
+    assumptions, so disagreement is not automatically our error.
+
+# -----------------------------------------------------------------------------
+# Experiment tracking (AGENTS.md §5, §14)
+# -----------------------------------------------------------------------------
+tracking:
+  record_fields:
+    - dataset
+    - split
+    - features
+    - model
+    - hyperparameters
+    - seed
+    - metrics
+    - checkpoint
+    - code_version
+    - config_version
+    - environment
+  output_dir: "artifacts"
+  provenance_schema: "floodmap.utils.provenance.ArtifactProvenance"

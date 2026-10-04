@@ -1,0 +1,130 @@
+# =============================================================================
+# configs/data.yaml — data acquisition and source configuration
+#
+# Multimodal AI Hackathon 2026, Track B.
+#
+# STATUS: structural placeholder. Values that have not been verified against
+# the official Track B challenge specification are `null` with a TODO note.
+# Nothing here is a measured or confirmed project parameter yet.
+#
+# DATA RULE (AGENTS.md §3, architecture.md §18): the `production` block may
+# contain ONLY Sentinel-1, Sentinel-2, Copernicus DEM, pre-event OSM and
+# permitted training datasets. Validation-only sources live in a separate
+# `validation_only` block and must never be read by training, feature
+# construction, preprocessing, inference or threshold selection.
+# =============================================================================
+
+version: 0.1.0
+
+# -----------------------------------------------------------------------------
+# Area of interest and event
+# -----------------------------------------------------------------------------
+aoi:
+  # TODO(verify): the challenge specification is not present in this repository,
+  # so no AOI geometry is defined. Do not invent coordinates.
+  name: null
+  # One of: bbox | geojson_path | named_region. TODO(contract): fix the canonical
+  # representation in docs/data-contract.md before implementing acquisition.
+  representation: null
+  bbox: null          # [min_lon, min_lat, max_lon, max_lat] when representation=bbox
+  geojson_path: null  # path under data/ when representation=geojson_path
+  crs: "EPSG:4326"    # Assumption: AOI expressed in geographic coordinates. Revisit if the
+                      # challenge specifies otherwise.
+
+event:
+  # Primary case study is the August 2026 Trishuli flood, Nepal (README.md §9).
+  # TODO(verify): exact event date/window is not stated in the repository docs.
+  name: "Trishuli flood, Nepal"
+  date: null          # ISO 8601
+  window_before_days: null
+  window_after_days: null
+
+# -----------------------------------------------------------------------------
+# PRODUCTION INPUTS — permitted sources only
+# -----------------------------------------------------------------------------
+production:
+
+  sentinel1:
+    enabled: true
+    # TODO(verify): product type and polarisations against the challenge spec.
+    product_type: null        # e.g. GRD — VERIFY
+    polarisations: null       # e.g. [VV, VH] — VERIFY
+    # AGENTS.md §4: prefer the same orbit track for change detection.
+    require_same_relative_orbit: true
+    # If no same-track pair exists, fail explicitly rather than silently
+    # comparing different geometries (architecture.md §17).
+    on_no_same_track_pair: "fail"   # fail | warn_and_continue
+    relative_orbit: null
+    orbit_direction: null
+    target_resolution_m: null       # TODO(verify)
+
+  sentinel2:
+    enabled: true
+    processing_level: null      # e.g. L2A — VERIFY
+    bands: null                 # TODO(verify) against label/feature requirements
+    max_scene_cloud_percent: null   # TODO: choose from data availability, not guessed
+    cloud_mask_source: null     # TODO(verify) which mask product is used
+    target_resolution_m: null
+
+  dem:
+    enabled: true
+    # README.md §12 attribution references Copernicus WorldDEM-30.
+    product: null               # TODO(verify) exact Copernicus DEM product/variant
+    version: null
+    resolution_m: null          # TODO(verify)
+    crs: null
+    derivatives: []             # e.g. [slope, aspect, flow_direction] — add only when used
+
+  osm:
+    enabled: true
+    # AGENTS.md §3: the snapshot MUST predate the event.
+    snapshot_date: null         # ISO 8601; must be < event.date
+    snapshot_source: null       # TODO(verify) provider of the historical extract
+    layers:
+      buildings: true
+      roads: true
+      bridges: true
+    # Hard guard: post-event OSM edits are validation-only.
+    allow_post_event_edits: false
+
+  training_datasets:
+    # UNKNOWN (blocking). README.md §4 and PRD.md §8 refer to "listed permitted
+    # training datasets", but no document in this repository enumerates them and
+    # the official challenge specification is absent. Do not populate this list
+    # from memory or assumption — see docs/dataset-registry.md.
+    datasets: []
+
+# -----------------------------------------------------------------------------
+# VALIDATION-ONLY SOURCES — never production inputs
+#
+# Present so the boundary is explicit and auditable. Consumed only by the
+# evaluation layer, and only after a production prediction exists
+# (architecture.md §11).
+# -----------------------------------------------------------------------------
+validation_only:
+  enabled: false
+  note: >-
+    These sources are for post-hoc comparison only. Importing any of them into
+    training, feature construction, preprocessing, inference or threshold
+    selection is a critical defect (AGENTS.md §3).
+  sources:
+    - name: "EMSR927"
+      purpose: "post-hoc comparison for the Trishuli case study"
+      path: null        # TODO: populate only when the comparison milestone starts
+    - name: "UNOSAT"
+      purpose: "post-hoc comparison"
+      path: null
+    - name: "post-event OSM edits"
+      purpose: "post-hoc comparison of infrastructure change"
+      path: null
+
+# -----------------------------------------------------------------------------
+# Local storage layout (AGENTS.md §15 — contents are git-ignored)
+# -----------------------------------------------------------------------------
+paths:
+  raw: "data/raw"
+  interim: "data/interim"
+  processed: "data/processed"
+  samples: "data/samples"
+  models: "models"
+  artifacts: "artifacts"
