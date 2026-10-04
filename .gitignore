@@ -1,0 +1,126 @@
+# ---------------------------------------------------------------------------
+# Data exclusion (AGENTS.md §15)
+#
+# Raw satellite scenes and generated datasets must never enter Git history.
+# This file is deliberately committed BEFORE the data/ tree exists so that a
+# large scene can never be staged accidentally.
+#
+# NOTE: data/samples/ is intentionally NOT ignored. AGENTS.md §15 permits small
+# reproducible examples to be committed "when licensing permits". Anything
+# placed there must be small and license-cleared, and must be a permitted
+# production input or an explicitly labelled validation-only reference.
+# ---------------------------------------------------------------------------
+# NOTE: these ignore directory CONTENTS (`dir/*`) rather than the directory
+# itself (`dir/`). Git cannot re-include a file whose parent directory is
+# excluded, so `data/raw/` plus `!**/.gitkeep` would silently drop the tracked
+# skeleton. Verified with `git check-ignore`.
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+models/*
+!models/.gitkeep
+artifacts/*
+!artifacts/.gitkeep
+
+# ---------------------------------------------------------------------------
+# Geospatial / raster payloads
+#
+# Belt-and-braces against a large binary landing outside the paths above.
+# ---------------------------------------------------------------------------
+*.tif
+*.tiff
+*.jp2
+*.nc
+*.hdf
+*.hdf5
+*.h5
+*.grd
+*.img
+*.vrt
+*.SAFE/
+*.safe/
+*.zip
+*.tar
+*.tar.gz
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.sbn
+*.sbx
+*.cpg
+*.pbf
+*.osm.pbf
+
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.joblib
+*.pkl
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# Credentials and local settings — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.yaml
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

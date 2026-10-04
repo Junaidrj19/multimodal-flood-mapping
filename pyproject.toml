@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "floodmap"
+version = "0.1.0"
+description = "Flood damage and accessibility intelligence from permitted satellite, terrain and pre-event OSM data (Multimodal AI Hackathon 2026, Track B)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "TODO: license not yet chosen for this repository" }
+authors = [{ name = "Mohammed Junaid" }]
+
+# Runtime dependencies for the CURRENT state of the repository only.
+#
+# This milestone establishes the scientific/engineering foundation: the
+# provenance schema and the configuration loader. Those are the only modules
+# with executable logic, and they need exactly these two packages.
+#
+# Dependencies are deliberately NOT added speculatively for pipeline stages
+# that are not implemented yet (AGENTS.md §21: a feature is done when it is
+# implemented, tested, scientifically checked, documented and reproducible).
+dependencies = [
+    "pydantic>=2",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "black>=24",
+]
+
+# Geospatial stack — DECLARED BUT NOT INSTALLED, AND NOT YET PINNED.
+#
+# No module in this repository imports any of these yet. They are listed so a
+# subsequent agent knows the intended stack, not because they are in use.
+#
+# TODO(verify-before-use): pin exact versions only after verifying, on the
+# target Python and OS, that:
+#   - the GDAL/PROJ binary wheels resolve without system packages;
+#   - rasterio and pyproj agree on the bundled PROJ data version;
+#   - geopandas/shapely/pyproj versions are mutually compatible.
+# Pinning these now, untested, would be a fabricated claim about the
+# environment. See docs/data-contract.md for the per-source requirements that
+# will determine which of these are actually needed.
+geo = [
+    "rasterio",
+    "rioxarray",
+    "xarray",
+    "geopandas",
+    "shapely",
+    "pyproj",
+    "osmnx",
+    "networkx",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
