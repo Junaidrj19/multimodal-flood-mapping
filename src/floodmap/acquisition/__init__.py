@@ -18,5 +18,14 @@ Key constraints
   (architecture.md §17).
 * Validation-only sources must never be acquired through this module.
 
-Status: NOT IMPLEMENTED. See docs/data-contract.md for the required interface.
+Milestone 1 status
+------------------
+The CDSE OData provider, deterministic scene selection, acquisition manifest,
+configuration schema and offline-verifiable CLI live in this package. Product
+downloads remain explicit and are disabled by default.
 """
+
+from .manifest import AcquisitionManifest
+from .providers import CdseOdataProvider
+
+__all__ = ["AcquisitionManifest", "CdseOdataProvider"]
