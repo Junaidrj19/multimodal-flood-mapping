@@ -4,15 +4,21 @@ Verify that the four configuration files exist, parse, and expose the sections
 later milestones will read.
 
 Deliberately NOT tested: whether the configuration *values* are scientifically
-correct. Most are intentionally ``null``/TODO at this stage, and asserting
-specific values would mean inventing the parameters this milestone leaves open.
+correct. Values that are still ``null``/TODO are intentionally not asserted,
+because pinning them would mean inventing parameters this milestone leaves open.
+Values marked VERIFIED(spec) in ``configs/data.yaml`` **are** asserted, since
+they are fixed by the official Track B specification and a silent change to any
+of them would alter what the project is required to do.
 """
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 import yaml
 
+from floodmap.utils.provenance import REQUIRED_ATTRIBUTIONS
 from floodmap.utils.config import (
     EXPECTED_CONFIGS,
     config_path,
@@ -116,9 +122,63 @@ class TestConfigScientificGuards:
     def test_validation_only_block_is_disabled_by_default(self):
         assert load_config("data")["validation_only"]["enabled"] is False
 
-    def test_training_datasets_are_not_invented(self):
-        """The permitted list is UNKNOWN (blocking); it must stay empty until supplied."""
-        assert load_config("data")["production"]["training_datasets"]["datasets"] == []
+    def test_training_datasets_are_exactly_the_permitted_list(self):
+        """VERIFIED(spec) — the permitted list is closed.
+
+        This replaces an earlier guard that asserted the list was empty while
+        the specification was unavailable. The list is now closed rather than
+        unknown, so the guard asserts exact equality: a *new* entry appearing
+        here is as much a governance violation as a forbidden one, because
+        training on an unlisted dataset breaks AGENTS.md §3.
+        """
+        td = load_config("data")["production"]["training_datasets"]
+        assert td["allowed_training_datasets"] == ["kuro_siwo", "sen1floods11"]
+        assert [d["id"] for d in td["datasets"]] == ["kuro_siwo", "sen1floods11"]
+
+    def test_training_datasets_carry_license_and_citation(self):
+        """AGENTS.md §18 — datasets must be cited per license and paper."""
+        for dataset in load_config("data")["production"]["training_datasets"]["datasets"]:
+            assert dataset["license"], f"{dataset['id']} has no license"
+            assert dataset["citation"], f"{dataset['id']} has no citation"
+
+    def test_detail_entries_match_the_allowed_list(self):
+        """The two representations of the permitted list cannot drift apart."""
+        td = load_config("data")["production"]["training_datasets"]
+        assert {d["id"] for d in td["datasets"]} == set(td["allowed_training_datasets"])
+
+    def test_event_date_is_the_specified_event(self):
+        """VERIFIED(spec) — Trishuli flood event date."""
+        assert load_config("data")["event"]["date"] == "2026-08-26"
+
+    def test_dem_source_is_the_specified_product(self):
+        """VERIFIED(spec) — Copernicus WorldDEM-30."""
+        assert load_config("data")["production"]["dem"]["product"] == "Copernicus WorldDEM-30"
+
+    def test_osm_snapshot_is_the_specified_pre_event_date(self):
+        """VERIFIED(spec) — ohsome historical snapshot, 2026-07-27."""
+        osm = load_config("data")["production"]["osm"]
+        assert osm["snapshot_date"] == "2026-07-27"
+        assert osm["snapshot_source"] == "ohsome API"
+
+    def test_osm_snapshot_predates_the_event(self):
+        """AGENTS.md §3 hard rule, checked as a date comparison rather than by eye.
+
+        This is the guard that actually matters: the two dates are configured
+        independently, so a future edit to either could silently invert them.
+        """
+        config = load_config("data")
+        snapshot = date.fromisoformat(config["production"]["osm"]["snapshot_date"])
+        event = date.fromisoformat(config["event"]["date"])
+        assert snapshot < event, (
+            f"OSM snapshot {snapshot} must predate the event {event}; a snapshot at "
+            "or after the event imports post-event knowledge into a production input."
+        )
+
+    def test_emsr927_is_marked_prohibited_as_production_input(self):
+        """VERIFIED(spec) — EMSR927 is validation-only."""
+        sources = load_config("data")["validation_only"]["sources"]
+        emsr = next(s for s in sources if s["name"] == "EMSR927")
+        assert emsr["prohibited_as_production_input"] is True
 
     def test_random_pixel_splits_are_forbidden(self):
         """Spatially correlated pixels across splits inflate scores."""
@@ -177,3 +237,50 @@ class TestConfigFilesAreValidYaml:
     def test_file_is_parseable_yaml(self, name: str):
         with config_path(name).open("r", encoding="utf-8") as handle:
             assert isinstance(yaml.safe_load(handle), dict)
+
+
+class TestMandatoryAttribution:
+    """AGENTS.md §18 — the three required attribution strings.
+
+    The strings exist in two places by design: ``provenance.py`` enforces them
+    on artifacts, ``configs/data.yaml`` exposes them to config consumers. Two
+    copies of a legally significant string is a drift hazard, so these tests
+    assert byte-equality rather than merely asserting each copy is non-empty.
+    """
+
+    def test_config_declares_the_required_attributions(self):
+        assert load_config("data")["attribution"]["required"] == list(REQUIRED_ATTRIBUTIONS)
+
+    def test_there_are_exactly_three(self):
+        assert len(REQUIRED_ATTRIBUTIONS) == 3
+
+    def test_sentinel_attribution_is_exact(self):
+        assert REQUIRED_ATTRIBUTIONS[0] == "Contains modified Copernicus Sentinel data 2026."
+
+    def test_osm_attribution_is_exact(self):
+        assert REQUIRED_ATTRIBUTIONS[2] == "© OpenStreetMap contributors."
+
+    def test_worlddem_attribution_retains_both_copyright_marks(self):
+        """Regression guard for the known upstream wording discrepancy.
+
+        A restatement of the specification omitted the "©" before "DLR e.V.".
+        AGENTS.md §18 and README.md §12 both include it, and dropping a
+        copyright mark from a required attribution is a legal defect, so this
+        pins the form with both marks present.
+        """
+        worlddem = REQUIRED_ATTRIBUTIONS[1]
+        assert "© DLR e.V. 2010-2014" in worlddem
+        assert "© Airbus Defence and Space GmbH 2014-2018" in worlddem
+        assert worlddem.endswith("all rights reserved.")
+
+    def test_attribution_matches_agents_md_source_of_truth(self):
+        """AGENTS.md §2 is the declared requirement source; stay consistent with it.
+
+        Compared on collapsed whitespace because AGENTS.md hard-wraps the
+        blockquote, and with "--" normalised to "-" because markdown prose uses
+        the double hyphen for an en-dash.
+        """
+        agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        normalised = " ".join(agents.replace("--", "-").replace(">", " ").split())
+        for required in REQUIRED_ATTRIBUTIONS:
+            assert " ".join(required.split()) in normalised, f"not found in AGENTS.md: {required}"

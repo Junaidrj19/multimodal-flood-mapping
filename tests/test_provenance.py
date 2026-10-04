@@ -16,6 +16,10 @@ import yaml
 from pydantic import ValidationError
 
 from floodmap.utils.provenance import (
+    OSM_ATTRIBUTION,
+    REQUIRED_ATTRIBUTIONS,
+    SENTINEL_ATTRIBUTION,
+    WORLDDEM_ATTRIBUTION,
     ArtifactProvenance,
     ArtifactType,
     BeforeAfterPair,
@@ -262,3 +266,78 @@ class TestSameOrbitTrackGuard:
             after=SceneReference(scene_id="b"),
         )
         assert pair.same_relative_orbit is None
+
+
+class TestAutomaticAttribution:
+    """AGENTS.md §18 — attribution must be automatic, not a caller's duty.
+
+    The design intent is that it should be *impossible* to produce an artifact
+    without the required attributions, including by accident. These tests probe
+    the ways a caller could realistically drop them.
+    """
+
+    def test_attached_without_being_asked(self):
+        assert _minimal().attribution == list(REQUIRED_ATTRIBUTIONS)
+
+    def test_attached_to_a_fully_populated_record(self):
+        for required in REQUIRED_ATTRIBUTIONS:
+            assert required in _populated().attribution
+
+    def test_survives_an_empty_list(self):
+        """An explicit ``[]`` must not defeat the requirement."""
+        record = ArtifactProvenance(artifact_type=ArtifactType.SITUATION_REPORT, attribution=[])
+        assert record.attribution == list(REQUIRED_ATTRIBUTIONS)
+
+    def test_partial_list_is_completed(self):
+        """Passing one required string must not drop the other two."""
+        record = ArtifactProvenance(
+            artifact_type=ArtifactType.SITUATION_REPORT,
+            attribution=[OSM_ATTRIBUTION],
+        )
+        assert record.attribution == list(REQUIRED_ATTRIBUTIONS)
+
+    def test_extra_citations_are_appended_not_substituted(self):
+        """Dataset citations coexist with the required strings (AGENTS.md §18)."""
+        citation = "Bountos et al., 2024 (NeurIPS 2024)"
+        record = ArtifactProvenance(
+            artifact_type=ArtifactType.SEGMENTATION_PREDICTION,
+            attribution=[citation],
+        )
+        assert record.attribution == list(REQUIRED_ATTRIBUTIONS) + [citation]
+
+    def test_order_is_deterministic(self):
+        """Required strings lead, in a fixed order, so rendered output is diffable."""
+        record = ArtifactProvenance(
+            artifact_type=ArtifactType.SITUATION_REPORT,
+            attribution=["extra", OSM_ATTRIBUTION, SENTINEL_ATTRIBUTION],
+        )
+        assert record.attribution[:3] == [
+            SENTINEL_ATTRIBUTION,
+            WORLDDEM_ATTRIBUTION,
+            OSM_ATTRIBUTION,
+        ]
+
+    def test_duplicates_are_collapsed(self):
+        record = ArtifactProvenance(
+            artifact_type=ArtifactType.SITUATION_REPORT,
+            attribution=[SENTINEL_ATTRIBUTION, SENTINEL_ATTRIBUTION, "x", "x"],
+        )
+        assert record.attribution == list(REQUIRED_ATTRIBUTIONS) + ["x"]
+
+    def test_present_in_every_serialization_format(self):
+        """Attribution is worthless if it is lost on the way to disk."""
+        record = _populated()
+        assert record.to_dict()["attribution"] == list(REQUIRED_ATTRIBUTIONS)
+        assert SENTINEL_ATTRIBUTION in json.loads(record.to_json())["attribution"]
+        assert SENTINEL_ATTRIBUTION in yaml.safe_load(record.to_yaml())["attribution"]
+
+    def test_round_trips(self):
+        record = _populated()
+        assert ArtifactProvenance.from_json(record.to_json()).attribution == record.attribution
+        assert ArtifactProvenance.from_yaml(record.to_yaml()).attribution == record.attribution
+
+    def test_every_artifact_type_carries_attribution(self):
+        """No artifact kind is exempt — reports, rasters and manifests alike."""
+        for artifact_type in ArtifactType:
+            record = ArtifactProvenance(artifact_type=artifact_type)
+            assert record.attribution == list(REQUIRED_ATTRIBUTIONS), artifact_type
