@@ -223,6 +223,9 @@ quantitative + qualitative evaluation
 
 ## 10. Repository structure
 
+Actual current state. Directories marked *(empty)* exist as documented
+namespaces awaiting their milestone; `(planned)` entries do not exist yet.
+
 ```text
 .
 ├── README.md
@@ -230,32 +233,57 @@ quantitative + qualitative evaluation
 ├── architecture.md
 ├── AGENTS.md
 ├── pyproject.toml
-├── configs/
-├── data/
+├── .gitignore
+├── configs/                      # pipeline configuration (placeholders, many TODO)
+│   ├── data.yaml
+│   ├── preprocessing.yaml
+│   ├── segmentation.yaml
+│   └── evaluation.yaml
+├── docs/
+│   ├── data-contract.md          # expected interface per data source
+│   ├── dataset-registry.md       # permitted vs validation-only datasets
+│   ├── scientific-assumptions.md # what the evidence does and does not support
+│   └── evaluation-protocol.md    # splits, metrics, leakage prevention
+├── data/                         # contents git-ignored (AGENTS.md §15)
+│   ├── raw/                      (empty)
+│   ├── interim/                  (empty)
+│   ├── processed/                (empty)
+│   └── samples/                  (empty; small licensed examples may be committed)
 ├── src/
 │   └── floodmap/
-│       ├── acquisition/
-│       ├── preprocessing/
-│       ├── features/
-│       ├── segmentation/
-│       ├── infrastructure/
-│       ├── network/
-│       ├── hydrology/
-│       ├── evaluation/
-│       ├── reporting/
+│       ├── __init__.py
+│       ├── acquisition/          (empty — namespace only)
+│       ├── preprocessing/        (empty — namespace only)
+│       ├── features/             (empty — namespace only)
+│       ├── segmentation/         (empty — namespace only)
+│       ├── infrastructure/       (empty — namespace only)
+│       ├── network/              (empty — namespace only)
+│       ├── hydrology/            (empty — namespace only)
+│       ├── evaluation/           (empty — namespace only)
+│       ├── reporting/            (empty — namespace only)
 │       └── utils/
-├── notebooks/
-├── tests/
-├── dashboard/
-├── reports/
-├── docs/
-└── scripts/
+│           ├── provenance.py     # artifact provenance schema
+│           └── config.py         # YAML configuration loader
+├── tests/                        # 108 tests, all passing
+│   ├── conftest.py
+│   ├── test_package_structure.py
+│   ├── test_configs.py
+│   ├── test_provenance.py
+│   └── test_data_boundary.py     # enforces the AGENTS.md §3 data rule
+├── models/                       (empty; git-ignored)
+├── artifacts/                    (empty; git-ignored)
+├── notebooks/                    (empty)
+├── scripts/                      (empty)
+├── dashboard/                    (planned — not created)
+└── reports/                      (planned — not created)
 ```
 
 Raw and large derived datasets must remain outside Git history unless
 explicitly small enough and legally appropriate.
 
 ## 11. Deliverables
+
+**None of the following exist yet.** This list is the target scope.
 
 - Interactive map dashboard
 - One-page system-generated situation report
@@ -296,21 +324,85 @@ warning minutes before a sudden glacier collapse.
 
 ## 14. Development status
 
-Current phase: **Phase 0 --- Scientific architecture and data contract**
+Current phase: **Phase 1 complete — scientific and engineering foundation.**
 
-The project will progress in this order:
+### What exists
 
-1.  Repository and architecture
-2.  Data provenance and legality checks
-3.  Acquisition
-4.  Preprocessing
-5.  Segmentation baseline
-6.  Unseen-Himalaya evaluation
-7.  Infrastructure impact
-8.  Road-network connectivity
-9.  Optional DEM flood-path analysis
-10. Trishuli case study
-11. Dashboard
-12. Situation report
-13. Final evaluation and limitations
-14. Demo and submission packaging
+| Component | Status |
+|---|---|
+| Repository scaffold, build config, data-exclusion rules | **Done** |
+| `docs/data-contract.md` — per-source expected interface | **Done** (with TODO/UNKNOWN markers) |
+| `docs/dataset-registry.md` — permitted vs validation-only | **Done** (no row VERIFIED; no data acquired) |
+| `docs/scientific-assumptions.md` | **Done** |
+| `docs/evaluation-protocol.md` | **Done** (no metric targets, no model chosen) |
+| `configs/*.yaml` — machine-readable configuration | **Done** (structural placeholders) |
+| `floodmap.utils.provenance` — artifact provenance schema | **Done** |
+| `floodmap.utils.config` — configuration loader | **Done** |
+| Test infrastructure (108 tests) incl. data-boundary guard | **Done** |
+
+### What does NOT exist
+
+Nothing below is implemented. The corresponding `src/floodmap/` subpackages are
+documented namespaces with no logic:
+
+- Sentinel-1 / Sentinel-2 / DEM / OSM acquisition
+- Preprocessing and co-registration
+- Feature construction
+- Flood/debris segmentation model (**no architecture selected** — `AGENTS.md` §5)
+- Infrastructure exposure analysis
+- Road-network graph and disruption analysis
+- Settlement connectivity analysis
+- DEM flood-path tracing (bonus)
+- Dashboard
+- Situation report generation
+
+**No model has been trained and no performance has been measured.** Any
+performance figure anywhere in this repository would be fabricated.
+
+### Known blocking gap
+
+The official Track B challenge specification that `AGENTS.md` §2 names as the
+primary requirement source is **not present in this repository**. As a result
+the **permitted training dataset list is UNKNOWN**, which blocks the
+segmentation and evaluation milestones. See `docs/dataset-registry.md` §1.5.
+
+The AOI geometry, exact event date, target grid CRS/resolution, DEM product
+variant and reference hub definition are likewise unresolved and recorded as
+TODO rather than guessed.
+
+### Progress order
+
+1.  Repository and architecture — **done**
+2.  Data provenance and legality checks — **partially done** (contract and
+    registry written; licenses still require verification)
+3.  Acquisition — not started
+4.  Preprocessing — not started
+5.  Segmentation baseline — **blocked** on the permitted dataset list
+6.  Unseen-Himalaya evaluation — blocked
+7.  Infrastructure impact — not started
+8.  Road-network connectivity — not started
+9.  Optional DEM flood-path analysis — not started
+10. Trishuli case study — not started
+11. Dashboard — not started
+12. Situation report — not started
+13. Final evaluation and limitations — not started
+14. Demo and submission packaging — not started
+
+## 15. Development setup
+
+```bash
+# Editable install with development dependencies
+pip install -e ".[dev]"
+
+# Run the test suite
+python3 -m pytest
+
+# Formatting
+black src tests
+```
+
+The geospatial stack (`rasterio`, `geopandas`, `pyproj`, `rioxarray`, `osmnx`)
+is declared in `pyproject.toml` under the `geo` extra but is **deliberately
+unpinned and not installed**: no module imports it yet, and pinning untested
+versions would be a false claim about the environment. Pin it in the milestone
+that first needs it.
