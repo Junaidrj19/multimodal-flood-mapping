@@ -85,6 +85,21 @@ class TestConfigStructure:
         ):
             assert key in config, f"configs/preprocessing.yaml must define {key}"
 
+    def test_features_config_sections(self):
+        config = load_config("features")
+        for key in (
+            "allowed_sources",
+            "enabled_templates",
+            "sentinel1",
+            "sentinel2",
+            "terrain",
+            "band_roles",
+            "numerics",
+            "grid",
+            "normalisation",
+        ):
+            assert key in config, f"configs/features.yaml must define {key}"
+
     def test_segmentation_config_sections(self):
         config = load_config("segmentation")
         for key in ("classes", "model", "features", "training", "inference", "tracking"):

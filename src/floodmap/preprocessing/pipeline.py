@@ -298,6 +298,7 @@ def preprocess_sentinel1_pair(
                 operations=operations,
                 config_version=config.version,
                 preprocessing_version=config.pipeline_version,
+                band_names=settings.required_polarizations,
                 quality_extra={
                     "sensor": SensorKind.SENTINEL1.value,
                     "temporal_role": label,
@@ -429,6 +430,7 @@ def preprocess_sentinel2_pair(
                 operations=operations,
                 config_version=config.version,
                 preprocessing_version=config.pipeline_version,
+                band_names=settings.required_bands,
                 quality_extra=quality_extra,
                 nodata=nodata,
             )
@@ -503,6 +505,7 @@ def preprocess_dem(
         ],
         config_version=config.version,
         preprocessing_version=config.pipeline_version,
+        band_names=("elevation",),
         dem_version=str(source_metadata["version"]),
         quality_extra=quality,
         nodata=nodata,

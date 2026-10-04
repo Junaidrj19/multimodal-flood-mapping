@@ -195,6 +195,250 @@ product IDs, preprocessing/configuration versions, operations, and QA values.
 
 ---
 
+## 0.6 Feature generation interface (Milestone 3)
+
+M3 consumes M2 analysis-ready artifacts and produces model-ready features. It
+does not query a catalogue, select or download scenes, resample, or classify:
+
+```text
+M2 preprocessed_raster artifacts
+  + their ArtifactProvenance
+  + their QA records
+        -> FeatureInputs (band-name addressed)
+        -> common-analysis-grid verification (no resampling)
+        -> FeatureRegistry resolution from the closed catalogue
+        -> per-feature computation with mask propagation
+        -> feature stack + per-feature valid masks + registry + QA + provenance
+```
+
+The boundary ends at **model-ready feature artifacts**. M3 applies no
+threshold, produces no class label, and makes no flood/debris decision. A
+feature is evidence for the M4 segmentation model.
+
+### 0.6.1 Input requirements
+
+Each supplied M2 artifact **REQUIRED** to have:
+
+| Requirement | Why |
+|---|---|
+| `<stem>.tif`, `<stem>_valid_mask.tif`, `<stem>_quality.json`, `<stem>_provenance.yaml` all present | A raster without its mask and provenance cannot be masked correctly or traced. |
+| `artifact_type: preprocessed_raster` | M3 consumes analysis-ready products only. |
+| non-empty `acquisition_manifest_id` | The chain to M1 and the source scenes must survive. |
+| non-empty `production_inputs`, all within the feature set's `allowed_sources` | Enforces the `AGENTS.md` §3 boundary at load time. |
+| named band descriptions | M3 addresses bands **by name, never by position**. |
+
+Band naming is why M2's `write_raster_artifact` now takes a required
+`band_names` argument: M2 validates its input bands by name, and before this
+milestone those names were discarded on write. A downstream stage forced to
+fall back on band *order* could feed the wrong channel into a formula, and the
+resulting raster would look entirely plausible.
+
+### 0.6.2 Band roles, not band names
+
+Features are defined over **roles** — `vv`, `vh`, `green`, `red`, `nir`,
+`swir16`, `elevation` — and `configs/features.yaml → band_roles` binds each role
+to the band description M2 actually wrote.
+
+The indirection exists because the delivered polarisation set (§1.1) and band
+set (§2.3) are still **TODO(verify)**, and `configs/preprocessing.yaml` leaves
+`required_polarizations` and `required_bands` null. Hard-coding `B03` as green,
+or assuming VV+VH exists, would be an assumption about a product nobody has
+inspected. An unbound role fails **by name**; it never resolves to a guess.
+
+### 0.6.3 Sentinel-1 backscatter representation — REQUIRED
+
+`configs/features.yaml → sentinel1.backscatter_representation` must be
+`linear` or `decibel`, and must agree with
+`configs/preprocessing.yaml → sentinel1.radiometric_calibration`. There is no
+default.
+
+This is a correctness gate, not a formatting preference. The same physical
+change quantity requires different arithmetic in each representation:
+
+| Representation | Change transform | Equivalent to |
+|---|---|---|
+| `decibel` | `post_dB - pre_dB` | `10·log10(post_linear / pre_linear)` |
+| `linear` | `10·log10(post_linear / pre_linear)` | the decibel difference |
+
+Applying a logarithm to decibel data yields a plausible-looking raster that is
+physically meaningless, and nothing downstream would reveal it.
+`tests/test_features_m3.py::TestNumericalFormulas::test_db_difference_equals_linear_log_ratio`
+pins the equivalence the gate relies on.
+
+### 0.6.4 Implemented features
+
+The catalogue is **closed**. Every entry below carries, in
+`feature_registry.json`, its family, source, inputs, exact transformation,
+units, dtype, declared range, nodata policy, version, rationale, limitations
+and citation where applicable.
+
+Per-polarisation entries expand over `sentinel1.polarisation_roles`;
+per-band entries expand over `sentinel2.spectral_band_roles`.
+
+| Feature | Formula | Units | Range | Represents |
+|---|---|---|---|---|
+| `s1_<pol>_pre` / `_post` | M2 value, unchanged | dB or linear power | — | Absolute backscatter level on each date. Retained so a change value can be interpreted relative to its starting point. |
+| `s1_<pol>_change_db` | `post − pre` (dB) **or** `10·log10(post/pre)` (linear) | dB | — | Log-ratio change. Speckle is multiplicative, so a ratio makes it additive with approximately terrain-independent statistics; the dB form is symmetric for reciprocal changes. |
+| `s1_vv_vh_ratio_db_pre` / `_post` | `VV_dB − VH_dB` | dB | — | Co/cross-polarised ratio: responds to scattering mechanism, separating dark-but-rough from dark-and-smooth. Requires dual polarisation to exist. |
+| `s2_<band>_pre` / `_post` | M2 value, unchanged | reflectance | `[0, 1]`\* | Spectral state on each date. |
+| `s2_<band>_change` | `post − pre` | reflectance | `[-1, 1]` | Per-band reflectance change, isolating surface change from the static land-cover background. |
+| `s2_ndwi_pre` / `_post` | `(green − nir) / (green + nir)` | dimensionless | `[-1, 1]`\*\* | NDWI (McFeeters 1996). Water absorbs NIR strongly while still reflecting green. |
+| `s2_mndwi_pre` / `_post` | `(green − swir16) / (green + swir16)` | dimensionless | `[-1, 1]`\*\* | MNDWI (Xu 2006). SWIR suppresses the built-up false positives that affect NDWI. |
+| `s2_ndvi_pre` / `_post` | `(nir − red) / (nir + red)` | dimensionless | `[-1, 1]`\*\* | NDVI (Rouse et al. 1974). Vegetation/water discrimination and SAR context, **not** a water indicator. |
+| `s2_ndwi_change`, `s2_mndwi_change`, `s2_ndvi_change` | `post_index − pre_index` | dimensionless | `[-2, 2]` | Index change. This is what separates new inundation from permanent water: a river channel scores high on both dates and changes near zero. |
+| `dem_elevation` | M2 value, unchanged | m | — | Terrain context constraining where water can plausibly stand. |
+| `dem_slope_degrees` | `degrees(arctan(hypot(dz/dx, dz/dy)))`, Horn (1981) 3×3 kernel | degrees | `[0, 90]` | Hydrological plausibility and SAR geometry error stratification (§3.4). Radar shadow in steep terrain is a systematic false-positive mechanism for water detection. |
+
+\* Holds for physically valid surface reflectance; atmospheric correction can
+return values slightly outside it over dark surfaces.
+\*\* Holds when both reflectances are non-negative.
+
+Declared ranges are **reported, never enforced by clipping**. An excursion is
+information — usually a slightly negative reflectance over a dark surface — and
+clipping it would hide that while altering the recorded physical value.
+`numerics.clip_to_valid_range` is `false` and enabling it requires a written
+scientific justification.
+
+Horn's kernel, written north-up as `z1 z2 z3 / z4 z5 z6 / z7 z8 z9`:
+
+```text
+dz/dx = ((z3 + 2*z6 + z9) - (z1 + 2*z4 + z7)) / (8 * cellsize)
+dz/dy = ((z1 + 2*z2 + z3) - (z7 + 2*z8 + z9)) / (8 * cellsize)
+```
+
+**Explicitly not implemented in M3:** flow direction, flow accumulation,
+watershed or settlement isolation, downstream flood routing, and road
+connectivity. Those belong to later milestones (`architecture.md` §8–§10).
+
+### 0.6.5 Numerical and mask contract
+
+For every feature:
+
+```text
+valid_feature_pixel =
+      valid(input_1) AND finite(input_1)
+  AND valid(input_2) AND finite(input_2)
+  AND ... AND in_mathematical_domain(transform)
+```
+
+- **REQUIRED:** no invalid input is ever replaced by a plausible scientific
+  value. For backscatter this matters directly — flooring a zero at a small
+  positive number would manufacture a very dark, water-like value out of a
+  non-observation (§1.7).
+- Log transforms require strictly positive inputs; a zero or negative input is
+  invalid, with **no epsilon regularisation**.
+- Normalised differences are invalid where the two bands sum to zero.
+- Non-finite values (NaN, ±inf) are invalid in every transform.
+- Slope: the one-pixel grid border is invalid because no 3×3 window exists, and
+  an interior pixel is invalid if **any** of its nine window cells is invalid.
+- Arithmetic is performed in float64 and cast once to the configured storage
+  dtype, so dtype is a storage decision rather than an accuracy accident.
+- Features sharing identical validity conditions receive identical masks.
+
+### 0.6.6 Alignment — M3 never resamples
+
+M3 requires every input to share one analysis grid, verified with M2's
+`require_aligned` (§0.5.1). Incompatible CRS, transform, resolution,
+dimensions, extent or pixel alignment is an explicit `FeatureGridError`.
+`configs/features.yaml → grid.allow_resampling` must stay `false`: resampling
+here would hide a real registration error behind an interpolation and silently
+invalidate every change feature computed from the pair. Spatial normalisation
+is M2's responsibility.
+
+Terrain derivatives additionally **REQUIRE** a projected grid in metres and an
+explicitly declared `terrain.elevation_unit: m`. The slope kernel divides an
+elevation difference by the pixel size, so a geographic grid would produce a
+gradient over degrees — not a slope, and not detectable from the output.
+
+### 0.6.7 Normalisation — applied, never fitted
+
+M3 emits scientifically interpretable physical quantities.
+`configs/features.yaml → normalisation.method` is `null`.
+
+When the segmentation milestone enables it, M3 **applies** parameters and never
+**fits** them: the only data M3 holds is the scene being processed, and fitting
+on it is the textbook form of test-time leakage. Enabling it requires an
+explicit `statistics_path`, a `version`, and
+`statistics_source: training_split_only` — matching
+`configs/segmentation.yaml → features.normalisation.statistics_source`. Fitting
+on the unseen Himalayan evaluation scenes is prohibited by `AGENTS.md` §5 and
+would void the evaluation. Method, parameters, source and version are recorded
+in the QA record on every run.
+
+### 0.6.8 Training-dataset adapter boundary
+
+`allowed_sources` deliberately excludes
+`permitted-training-dataset`. Kuro Siwo and Sen1Floods11 differ from our
+inference-time products in band naming, resolution, label conventions, metadata
+and sensor representation (§5.4, §5.5), and adapting them *inside* the
+production feature generator would make the scientific definition of a feature
+depend on which corpus supplied it — a silent train/serve mismatch.
+
+The required boundary is therefore:
+
+```text
+training corpus
+      -> dataset adapter (segmentation milestone)
+      -> M2-equivalent analysis-ready arrays + band names + valid masks
+      -> the SAME FeatureRegistry definitions used in production
+```
+
+The adapter's obligation is to present arrays that satisfy §0.6.1 and bind the
+same roles in §0.6.2. `feature_registry.json` is sufficient for this: it carries
+the exact transform, inputs, units and nodata policy for every feature, so a
+corpus can be mapped onto the feature contract without changing it.
+`tests/test_features_m3.py::TestTrainingDataAdapterBoundary` asserts that no
+dataset-specific identifier appears anywhere in the production feature package.
+
+### 0.6.9 Output artifact
+
+```text
+<output>/features/<feature-set-id>/
+  ├── features.tif                  # one band per feature; descriptions = feature names
+  ├── features_valid_mask.tif       # one band per feature, same order; 1 = valid
+  ├── feature_registry.json         # machine-readable feature contract
+  ├── features_quality.json
+  └── features_provenance.yaml      # ArtifactProvenance, artifact_type: feature_stack
+```
+
+This extends M2's `<stem>`-based convention (§1.8/§2.5/§3.5) rather than
+introducing a parallel one.
+
+The valid mask is a **band-per-feature stack, not a single plane**. Features do
+not share validity: a Sentinel-1 change feature can be valid where a
+Sentinel-2 index is cloud-masked. Collapsing them would either discard valid
+SAR evidence or mark cloud-obscured optical pixels as observed, and
+`docs/scientific-assumptions.md` §8 requires "not observed" to stay
+distinguishable from "observed, not flooded". A combined-validity summary is
+recorded in QA as a statistic and never substituted for the per-feature masks.
+
+Provenance **REQUIRED** fields: `artifact_type: feature_stack`, the M1
+acquisition manifest ID(s), the Sentinel-1/Sentinel-2 before/after scene pairs
+carried forward from M2, DEM version, union of source product IDs, feature
+pipeline and configuration versions, and the operations applied. The QA record
+carries `classification_performed: false`.
+
+### 0.6.10 Determinism
+
+Identical inputs and configuration produce byte-identical `features.tif`,
+`features_valid_mask.tif`, `feature_registry.json` and `features_quality.json`.
+Feature order follows catalogue order and then configured role order, so it is
+independent of mapping iteration and of the order templates are listed in
+configuration. Neither the registry nor the QA record contains a timestamp;
+`generated_at` in the provenance record is the only time-varying field.
+
+### 0.6.11 Production status
+
+**Feature generation against real Trishuli data has not been run.** The engine
+is implemented and tested against synthetic M2-compatible artifacts only. A
+production run fails explicitly until the operator supplies the delivered
+polarisation and band bindings, the backscatter representation, the elevation
+unit, the output nodata sentinel, and the M2 target grid that
+`configs/preprocessing.yaml` still leaves null. No AOI coordinate, scene ID,
+band name or feature distribution has been invented to fill those gaps.
+
+---
+
 ## 1. Sentinel-1 (SAR)
 
 **Role:** cloud-independent observation; primary pre/post change-detection
@@ -265,11 +509,17 @@ This is a hard scientific constraint, not a preference:
 
 ### 1.6 Expected channels / features
 
-- **TODO(define in features milestone).** Candidates from `architecture.md` §5:
-  per-polarisation backscatter pre and post, and pre/post difference or ratio.
-- Backscatter is typically handled in dB for differencing; whether this project
-  does so is **TODO(verify)**
-  (`configs/preprocessing.yaml → sentinel1.steps.convert_to_db`).
+- **RESOLVED (Milestone 3).** Per-polarisation backscatter pre and post, the
+  log-ratio change, and the co/cross-polarised ratio on both dates. Exact
+  formulas, units and masking behaviour are in §0.6.4.
+- Which polarisations actually expand is driven by
+  `configs/features.yaml → sentinel1.polarisation_roles`, still null. Dual
+  polarisation is not assumed to exist.
+- Backscatter representation is no longer left implicit: whether differencing
+  happens in dB or as a linear log-ratio is a **required**, explicit setting
+  (§0.6.3), because the two need different arithmetic for the same quantity.
+  It must agree with
+  `configs/preprocessing.yaml → sentinel1.radiometric_calibration`.
 
 ### 1.7 NoData handling
 
@@ -340,9 +590,13 @@ CRS and resolution.
 - *Commonly documented — VERIFY*: Sentinel-2 MSI provides visible/NIR bands at
   10 m, red-edge/SWIR at 20 m, and atmospheric bands at 60 m. Any multi-band
   stack therefore requires an explicit, documented resampling decision.
-- Water-sensitive indices (e.g. NDWI-type green/NIR or SWIR combinations) are
-  plausible candidates but **not yet selected**
-  (`configs/segmentation.yaml → features.indices: []`).
+- Water-sensitive indices are now **selected and defined**: NDWI (green/NIR),
+  MNDWI (green/SWIR) and NDVI (NIR/red), each pre, post and as a change
+  feature. Definitions, citations and masking behaviour are in §0.6.4. They are
+  computed over *roles*, so each remains unavailable until the corresponding
+  band description is bound in `configs/features.yaml → band_roles` (§0.6.2).
+- An index is a feature, not a classification rule. No water threshold is
+  applied in M3.
 
 ### 2.4 Spatial alignment
 
@@ -401,9 +655,9 @@ flood-path tracing (`architecture.md` §3).
 
 | Derivative | Status | Note |
 |---|---|---|
-| slope | TODO | Needed for radar geometry reasoning and error stratification. |
-| aspect | TODO | Relevant to SAR shadow/layover. |
-| flow direction / accumulation | TODO | Only for the optional hydrology bonus. |
+| slope | **IMPLEMENTED (M3)** | Horn (1981) 3x3 kernel, degrees. Radar geometry reasoning and error stratification. Requires a projected metre grid and a declared elevation unit (§0.6.4, §0.6.6). |
+| aspect | NOT IMPLEMENTED | Relevant to SAR shadow/layover, but no downstream stage consumes it yet. Adding it without a consumer would be an unused claim. |
+| flow direction / accumulation | NOT IMPLEMENTED | Deliberately out of scope for M3; only for the optional hydrology bonus. |
 
 `configs/preprocessing.yaml → dem.derivatives: []` — computed only when a
 downstream stage actually consumes them. Void filling, if enabled, **REQUIRED**

@@ -87,12 +87,21 @@ def write_raster_artifact(
     operations: Sequence[str],
     config_version: str,
     preprocessing_version: str,
+    band_names: Sequence[str],
     production_input: Optional[ProductionInput] = None,
     dem_version: Optional[str] = None,
     quality_extra: Optional[Mapping[str, Any]] = None,
     nodata: Optional[float] = None,
 ) -> ProcessedArtifact:
-    """Write data, mask, QA JSON and linked ArtifactProvenance."""
+    """Write data, mask, QA JSON and linked ArtifactProvenance.
+
+    ``band_names`` is required rather than optional. M2 resolves its input
+    bands by name and never by position, and the written artifact must preserve
+    those names: a downstream stage that had to fall back on band *order* could
+    silently feed the wrong channel into a formula, which is undetectable in the
+    output. Preserving the names keeps the geospatial and semantic metadata
+    intact end to end (``AGENTS.md`` §7).
+    """
     _require_rasterio()
     if sensor is None and production_input is None:
         raise ValueError("an artifact must identify its production input")
@@ -102,6 +111,14 @@ def write_raster_artifact(
         raise ValueError("valid mask shape does not match analysis grid")
     if data.shape[1:] != (grid.height, grid.width):
         raise ValueError("artifact data shape does not match analysis grid")
+    names = tuple(str(name) for name in band_names)
+    if len(names) != int(data.shape[0]):
+        raise ValueError(
+            f"received {len(names)} band names for {int(data.shape[0])} bands; "
+            "every written band must carry the name it was validated under"
+        )
+    if len(set(names)) != len(names):
+        raise ValueError(f"band names must be unique within an artifact: {list(names)}")
     output_dir.mkdir(parents=True, exist_ok=True)
     artifact_path = output_dir / f"{stem}.tif"
     valid_mask_path = output_dir / f"{stem}_valid_mask.tif"
@@ -121,10 +138,13 @@ def write_raster_artifact(
     }
     with rasterio.open(artifact_path, "w", **profile) as destination:
         destination.write(data)
+        for index, name in enumerate(names, start=1):
+            destination.set_band_description(index, name)
         destination.update_tags(
             preprocessing_version=preprocessing_version,
             acquisition_manifest_id=manifest.artifact_id,
             source_product_ids=",".join(source_product_ids),
+            band_names=",".join(names),
         )
     mask_profile = {**profile, "count": 1, "dtype": "uint8", "nodata": 0}
     with rasterio.open(valid_mask_path, "w", **mask_profile) as destination:
@@ -138,6 +158,7 @@ def write_raster_artifact(
             "preprocessing_version": preprocessing_version,
             "config_version": config_version,
             "acquisition_manifest_id": manifest.artifact_id,
+            "band_names": list(names),
             "source_product_ids": list(source_product_ids),
             "source_scene_ids": list(source_scene_ids),
         }

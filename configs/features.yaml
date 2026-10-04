@@ -1,0 +1,200 @@
+# =============================================================================
+# configs/features.yaml — Earth observation feature generation (Milestone 3)
+#
+# STATUS: structural contract complete; several scientific bindings remain
+# `null` because they can only be read from a delivered product.
+#
+# M3 converts M2 analysis-ready products into scientifically interpretable,
+# model-ready features. It performs NO classification: no flood/debris
+# threshold, decision rule or class label appears in this file or in M3 code.
+# Decision thresholds belong to configs/segmentation.yaml and are selected on
+# the validation split in the evaluation milestone.
+#
+# AGENTS.md §14: scientific parameters live here, not in feature functions.
+# AGENTS.md §3: only permitted production inputs may contribute to a feature.
+# =============================================================================
+
+version: 0.1.0
+
+# Versions recorded on every generated artifact so an inference is reproducible.
+pipeline_version: "m3-features-0.1.0"
+registry_version: "1.0.0"
+# The version of the feature *definitions* a stack was produced under. A change
+# to any formula, unit or masking rule must bump this, because a model trained
+# on one definition cannot be served features built under another.
+feature_set_version: "1.0.0"
+
+# -----------------------------------------------------------------------------
+# Production input boundary
+#
+# The closed set of permitted sources this feature set may consume, from
+# AGENTS.md §3. Validated against floodmap.utils.provenance.ProductionInput;
+# a validation-only identifier here is rejected by name, and so is a typo.
+# Permitted training datasets are NOT listed: they enter through the documented
+# adapter boundary in the segmentation milestone, not the production feature
+# generator. See docs/data-contract.md §0.6.
+# -----------------------------------------------------------------------------
+allowed_sources:
+  - sentinel-1
+  - sentinel-2
+  - copernicus-dem
+
+# -----------------------------------------------------------------------------
+# Enabled features
+#
+# Template IDs from the closed catalogue in floodmap.features.registry. Every
+# entry carries its own formula, units, nodata policy and scientific rationale
+# in the registry; see docs/data-contract.md §0.6 for the rendered list.
+#
+# Nothing is enabled because it is conventional. Each family answers a distinct
+# question: absolute backscatter level, change in that level, scattering
+# mechanism, spectral state, spectral change, and terrain plausibility.
+# -----------------------------------------------------------------------------
+enabled_templates:
+  # --- Sentinel-1: level, change and polarimetric state
+  - s1_backscatter_pre
+  - s1_backscatter_post
+  - s1_change_db
+  - s1_co_cross_ratio_db_pre
+  - s1_co_cross_ratio_db_post
+  # --- Sentinel-2: reflectance level and change
+  - s2_reflectance_pre
+  - s2_reflectance_post
+  - s2_reflectance_change
+  # --- Sentinel-2: water- and vegetation-sensitive indices, pre/post/change
+  - s2_ndwi_pre
+  - s2_ndwi_post
+  - s2_ndwi_change
+  - s2_mndwi_pre
+  - s2_mndwi_post
+  - s2_mndwi_change
+  - s2_ndvi_pre
+  - s2_ndvi_post
+  - s2_ndvi_change
+  # --- Terrain
+  - dem_elevation
+  - dem_slope_degrees
+
+# -----------------------------------------------------------------------------
+# Sentinel-1
+# -----------------------------------------------------------------------------
+sentinel1:
+  # Which polarisation roles the per-polarisation templates expand over.
+  # TODO(verify): IW mode commonly provides VV+VH, but docs/data-contract.md
+  # §1.1 marks the delivered polarisation set TODO(verify) and M2 leaves
+  # sentinel1.required_polarizations null. Do NOT assume dual polarisation.
+  polarisation_roles: null      # e.g. ["vv", "vh"] once read from the product
+
+  # REQUIRED before any Sentinel-1 feature can be generated: how M2 expressed
+  # backscatter in the artifact it wrote. `linear` = linear power,
+  # `decibel` = 10*log10 already applied.
+  #
+  # This is not a formatting detail. In decibels the log-ratio change IS the
+  # plain difference; in linear power it is 10*log10(post/pre). Applying a
+  # logarithm to decibel data yields a plausible-looking raster that is
+  # physically meaningless, so there is no default. It must agree with
+  # configs/preprocessing.yaml -> sentinel1.radiometric_calibration.
+  backscatter_representation: null   # linear | decibel
+
+# -----------------------------------------------------------------------------
+# Sentinel-2
+# -----------------------------------------------------------------------------
+sentinel2:
+  # Which spectral band roles the per-band templates expand over.
+  # TODO(verify): the delivered band set is unresolved
+  # (docs/data-contract.md §2.3, configs/preprocessing.yaml ->
+  # sentinel2.required_bands). Band *selection* must follow the permitted
+  # training datasets' requirements, which are themselves unverified.
+  spectral_band_roles: null     # e.g. ["green", "red", "nir", "swir16"]
+
+# -----------------------------------------------------------------------------
+# Band role bindings
+#
+# Features are defined over ROLES, not band names, and this block binds a role
+# to the band description M2 actually wrote into the artifact.
+#
+# Why the indirection: hard-coding "B03" as green would be an assumption about a
+# product nobody has inspected. The repository's band names are read from
+# delivered data (M2 validates named bands and never guesses band order), so M3
+# must do the same. An unbound role makes its feature fail by name rather than
+# silently computing an index from the wrong channel — which would produce a
+# scientifically wrong raster that no downstream check could detect.
+#
+# The role names used by the catalogue:
+#   sentinel1_before / sentinel1_after : vv, vh (co- and cross-polarised)
+#   sentinel2_before / sentinel2_after : green, red, nir, swir16
+#   dem                                : elevation
+#
+# Each artifact block stays null until the delivered band descriptions are
+# verified. The before/after blocks are listed separately rather than shared,
+# because a product change between the two dates must be visible here.
+# -----------------------------------------------------------------------------
+band_roles:
+  sentinel1_before: null        # e.g. {vv: "VV", vh: "VH"}
+  sentinel1_after: null
+  sentinel2_before: null        # e.g. {green: "B03", red: "B04", nir: "B08", swir16: "B11"}
+  sentinel2_after: null
+  dem: null                     # e.g. {elevation: "elevation"}
+
+# -----------------------------------------------------------------------------
+# Terrain derivatives
+#
+# Only elevation and slope are produced. Flow direction, accumulation,
+# downstream tracing, watershed isolation and road connectivity are explicitly
+# out of scope for M3 and belong to later milestones
+# (configs/preprocessing.yaml -> dem.derivatives, architecture.md §10).
+# -----------------------------------------------------------------------------
+terrain:
+  # REQUIRED for slope: the slope kernel divides an elevation difference by the
+  # grid pixel size, so the two must share a linear unit. A raster cannot report
+  # its elevation unit, so the operator declares it. Only "m" is accepted.
+  elevation_unit: null          # "m" once confirmed from the delivered DEM
+  # Refuse to compute slope on a geographic grid: a gradient over degrees is
+  # not a slope, and the output would look entirely plausible.
+  require_projected_grid: true
+
+# -----------------------------------------------------------------------------
+# Numerical policy
+# -----------------------------------------------------------------------------
+numerics:
+  output_dtype: "float32"
+  # TODO(set with the AOI): must be a value no enabled feature can legitimately
+  # take. Decibel change features are signed and unbounded in principle, so the
+  # sentinel depends on the enabled set; it is not defaulted.
+  output_nodata: null
+  # Count and report valid pixels outside each feature's declared range.
+  report_out_of_declared_range: true
+  # Clipping alters recorded physical values. It stays off, and enabling it
+  # requires a written scientific reason rather than a convenience argument.
+  clip_to_valid_range: false
+  clip_justification: null
+
+# -----------------------------------------------------------------------------
+# Grid handling
+# -----------------------------------------------------------------------------
+grid:
+  # Tolerance for M2's grid comparison; null means exact equality.
+  transform_tolerance: null
+  # Must remain false. M2 owns spatial normalisation; resampling again here
+  # would hide a real registration error behind an interpolation and silently
+  # invalidate every change feature computed from the pair.
+  allow_resampling: false
+
+# -----------------------------------------------------------------------------
+# Machine-learning normalisation
+#
+# Disabled. M3's product is scientifically interpretable physical quantities;
+# rescaling them is a modelling decision, not a feature definition.
+#
+# When the segmentation milestone enables it, M3 will APPLY parameters but never
+# FIT them: the only data M3 holds is the scene being processed, and fitting on
+# it is the textbook form of test-time leakage. `statistics_source` must stay
+# training-split-only, matching configs/segmentation.yaml ->
+# features.normalisation.statistics_source. Fitting on the unseen Himalayan
+# evaluation scenes is prohibited by AGENTS.md §5 and would void the evaluation.
+# -----------------------------------------------------------------------------
+normalisation:
+  method: null                  # null | zscore | minmax
+  statistics_source: "training_split_only"
+  statistics_path: null
+  version: null

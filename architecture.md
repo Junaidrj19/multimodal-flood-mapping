@@ -165,23 +165,48 @@ from the documented pipeline.
 
 The feature layer creates model inputs from permitted observations.
 
-Potential features include:
+Implemented (Milestone 3):
 
-- Sentinel-1 backscatter channels;
-- pre/post SAR differences or ratios;
-- Sentinel-2 spectral bands;
-- spectral indices;
+- Sentinel-1 backscatter channels, pre and post;
+- pre/post SAR log-ratio change, representation-aware;
+- Sentinel-1 co/cross-polarised ratio on both dates;
+- Sentinel-2 spectral bands, pre and post;
+- spectral indices (NDWI, MNDWI, NDVI), pre, post and change;
 - pre/post optical differences;
-- terrain/elevation features where justified.
+- terrain elevation and slope.
 
-Feature construction must be reproducible and configurable.
+Feature construction is reproducible and configurable, driven by
+`configs/features.yaml` and a closed feature catalogue.
+
+Three architectural properties of this layer:
+
+1.  **The feature contract is machine-readable.** Every generated band is
+    declared in a `feature_registry.json` written beside the raster, carrying
+    its physical meaning, source, inputs, formula, units, dtype, declared
+    range, nodata policy, version and rationale. The segmentation layer
+    consumes that registry rather than relying on band order.
+2.  **The layer does not classify.** No threshold, decision rule or class label
+    exists in this layer. That boundary is what makes §6 the only place a
+    prediction is produced, and it keeps invariant §18.7 enforceable.
+3.  **The layer does not resample.** Spatial normalisation belongs entirely to
+    §4. Two inputs that do not share the analysis grid are an explicit failure
+    here, so a registration error cannot be absorbed by a second
+    interpolation.
+
+Validity propagates rather than being repaired: a feature pixel is valid only
+where every contributing input pixel is valid, and masks are written per
+feature because a SAR change feature can be valid where an optical index is
+cloud-masked.
+
+Terrain work in this layer stops at elevation and slope. Flow direction,
+accumulation, downstream tracing and settlement isolation belong to §10.
 
 ## 6. Segmentation layer
 
 Input:
 
 ```text
-analysis-ready multimodal raster
+feature stack + per-feature valid masks + feature registry (§5)
 ```
 
 Output:
@@ -387,9 +412,16 @@ Experiments should be controlled by configuration files.
 configs/
 ├── data.yaml
 ├── preprocessing.yaml
+├── features.yaml
 ├── segmentation.yaml
 └── evaluation.yaml
 ```
+
+`features.yaml` was added with the feature layer. The feature contract is kept
+out of `segmentation.yaml` deliberately: that file owns model and threshold
+choices, and a feature definition must be versioned independently of them
+because a model trained under one definition cannot be served features built
+under another.
 
 A model result should be reproducible from:
 
@@ -475,6 +507,8 @@ These rules must not be violated:
 6.  Every numerical report claim originates from structured system
     outputs.
 7.  Spatial exposure is not automatically equivalent to physical damage.
+    Correspondingly, a feature is evidence, not a prediction: the feature layer
+    applies no threshold and produces no class label.
 8.  Network disconnection is an inference about modeled accessibility.
 9.  All major outputs retain provenance.
 10. Limitations are part of the product, not an afterthought.
