@@ -100,6 +100,12 @@ The challenge specifically recommends comparing Sentinel-1 acquisitions
 from the same orbit track for change detection because different tracks
 view terrain from different angles.
 
+Milestone 1 implements the metadata acquisition boundary for these inputs.
+`scripts/acquire.py` accepts a caller-supplied EPSG:4326 AOI and explicit
+temporal windows, discovers CDSE Sentinel-1/Sentinel-2 metadata, applies
+deterministic selection, and writes an auditable JSON/YAML manifest. Discovery
+does not download products; downloads require the explicit `--download` flag.
+
 ### Validation-only sources
 
 - Copernicus EMS / EMSR927
@@ -252,7 +258,7 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 ├── src/
 │   └── floodmap/
 │       ├── __init__.py
-│       ├── acquisition/          (empty — namespace only)
+│       ├── acquisition/          # CDSE provider, selection and manifests (M1)
 │       ├── preprocessing/        (empty — namespace only)
 │       ├── features/             (empty — namespace only)
 │       ├── segmentation/         (empty — namespace only)
@@ -264,16 +270,18 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 │       └── utils/
 │           ├── provenance.py     # artifact provenance schema
 │           └── config.py         # YAML configuration loader
-├── tests/                        # 108 tests, all passing
+├── tests/                        # M0 + M1 offline tests
 │   ├── conftest.py
 │   ├── test_package_structure.py
 │   ├── test_configs.py
 │   ├── test_provenance.py
-│   └── test_data_boundary.py     # enforces the AGENTS.md §3 data rule
+│   ├── test_data_boundary.py     # enforces the AGENTS.md §3 data rule
+│   └── test_acquisition_m1.py    # provider, selection and manifest tests
 ├── models/                       (empty; git-ignored)
 ├── artifacts/                    (empty; git-ignored)
 ├── notebooks/                    (empty)
-├── scripts/                      (empty)
+├── scripts/
+│   └── acquire.py                # metadata discovery / explicit download CLI
 ├── dashboard/                    (planned — not created)
 └── reports/                      (planned — not created)
 ```
@@ -324,7 +332,7 @@ warning minutes before a sudden glacier collapse.
 
 ## 14. Development status
 
-Current phase: **Phase 1 complete — scientific and engineering foundation.**
+Current phase: **Milestone 1 complete — Earth Observation acquisition.**
 
 ### What exists
 
@@ -338,14 +346,14 @@ Current phase: **Phase 1 complete — scientific and engineering foundation.**
 | `configs/*.yaml` — machine-readable configuration | **Done** (structural placeholders) |
 | `floodmap.utils.provenance` — artifact provenance schema | **Done** |
 | `floodmap.utils.config` — configuration loader | **Done** |
-| Test infrastructure (108 tests) incl. data-boundary guard | **Done** |
+| Milestone 1 EO acquisition provider, selection and manifest | **Done** (offline; AOI/windows remain operator inputs) |
+| Test infrastructure incl. data-boundary guard | **Done** |
 
 ### What does NOT exist
 
-Nothing below is implemented. The corresponding `src/floodmap/` subpackages are
-documented namespaces with no logic:
+The following later stages are not implemented. Their corresponding
+`src/floodmap/` subpackages remain documented namespaces with no logic:
 
-- Sentinel-1 / Sentinel-2 / DEM / OSM acquisition
 - Preprocessing and co-registration
 - Feature construction
 - Flood/debris segmentation model (**no architecture selected** — `AGENTS.md` §5)
@@ -399,7 +407,7 @@ See `docs/dataset-registry.md` §5 for the full list.
 1.  Repository and architecture — **done**
 2.  Data provenance and legality checks — **partially done** (contract and
     registry written; licenses still require verification)
-3.  Acquisition — not started
+3.  Acquisition — **done (Milestone 1: metadata discovery and manifest)**
 4.  Preprocessing — not started
 5.  Segmentation baseline — not started (**unblocked**: permitted datasets are
     now specified; label semantics still to confirm)
@@ -423,8 +431,28 @@ pip install -e ".[dev]"
 python3 -m pytest
 
 # Formatting
-black src tests
+black src scripts tests
 ```
+
+### Acquisition quick start
+
+Build a manifest and the exact CDSE queries without network access:
+
+```bash
+python3 scripts/acquire.py \
+  --dry-run \
+  --aoi-id synthetic-demo \
+  --aoi-bbox 0.0 0.0 0.1 0.1 \
+  --before-days 12 \
+  --after-days 12 \
+  --manifest artifacts/acquisition_manifest.json
+```
+
+Remove `--dry-run` for metadata discovery. Add `--download` only when product
+downloads are intentionally enabled and CDSE credentials are available through
+`CDSE_USERNAME` and `CDSE_PASSWORD`. The manifest records discovery failures,
+empty results, rejected candidates, and download `NOT_ATTEMPTED` states
+separately.
 
 The geospatial stack (`rasterio`, `geopandas`, `pyproj`, `rioxarray`, `osmnx`)
 is declared in `pyproject.toml` under the `geo` extra but is **deliberately

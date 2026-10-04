@@ -27,7 +27,7 @@ Two design decisions worth stating
 
 Status
 ------
-This is the schema only. No pipeline stage populates it yet.
+The acquisition stage populates ACQUISITION_MANIFEST records.
 """
 
 from __future__ import annotations
@@ -176,7 +176,7 @@ class SceneReference(BaseModel):
         default=None,
         description="Acquisition timestamp, ISO 8601 with timezone. Required for temporal reasoning.",
     )
-    relative_orbit: Optional[int] = Field(
+    relative_orbit: Union[int, Unknown, None] = Field(
         default=None,
         description="Relative orbit / track number. Needed to verify same-track S1 comparison.",
     )
@@ -185,6 +185,25 @@ class SceneReference(BaseModel):
     )
     processing_level: Maybe = Field(
         default=None, description="Provider processing level, e.g. S1 GRD, S2 L2A."
+    )
+    platform: Maybe = Field(
+        default=None,
+        description=(
+            "Observing platform as reported by the provider, e.g. SENTINEL-1. "
+            "docs/data-contract.md §1.1 lists platform as REQUIRED per scene. "
+            "Note the catalogue reports the mission, not the individual satellite "
+            "unit; the unit, where derivable, is recorded in the acquisition "
+            "manifest rather than here."
+        ),
+    )
+    product_type: Maybe = Field(
+        default=None,
+        description=(
+            "Provider product type, e.g. IW_GRDH_1S or S2MSI2A. "
+            "docs/data-contract.md §1.1 lists product type as REQUIRED per scene, "
+            "because amplitude change detection is only valid between comparable "
+            "product types."
+        ),
     )
     source: Optional[ProductionInput] = Field(
         default=None, description="Which permitted production source this scene came from."
@@ -223,7 +242,7 @@ class BeforeAfterPair(BaseModel):
         before, after = data.get("before"), data.get("after")
         b_orbit = getattr(before, "relative_orbit", None)
         a_orbit = getattr(after, "relative_orbit", None)
-        if b_orbit is None or a_orbit is None:
+        if not isinstance(b_orbit, int) or not isinstance(a_orbit, int):
             raise ValueError(
                 "same_relative_orbit=True requires a known relative_orbit on both scenes; "
                 "use None when the orbit is unrecorded rather than asserting same-track."
@@ -249,11 +268,11 @@ class ArtifactProvenance(BaseModel):
     artifact_id: Maybe = Field(default=None, description="Stable identifier for this artifact.")
 
     # --- spatial / temporal scope ----------------------------------------
-    aoi: Maybe = Field(
+    aoi: Union[str, Dict[str, Any], Unknown, None] = Field(
         default=None,
         description=(
-            "Area of interest. TODO(contract): the canonical representation (bbox, GeoJSON "
-            "geometry, or named region) is not yet fixed; see docs/data-contract.md."
+            "AOI identifier or geometry summary. Acquisition manifests retain the full "
+            "EPSG:4326 geometry, identifier and synthetic flag."
         ),
     )
     aoi_crs: Maybe = Field(default=None, description="CRS of the AOI geometry, e.g. EPSG:4326.")

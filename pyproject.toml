@@ -11,18 +11,12 @@ requires-python = ">=3.11"
 license = { text = "TODO: license not yet chosen for this repository" }
 authors = [{ name = "Mohammed Junaid" }]
 
-# Runtime dependencies for the CURRENT state of the repository only.
-#
-# This milestone establishes the scientific/engineering foundation: the
-# provenance schema and the configuration loader. Those are the only modules
-# with executable logic, and they need exactly these two packages.
-#
-# Dependencies are deliberately NOT added speculatively for pipeline stages
-# that are not implemented yet (AGENTS.md §21: a feature is done when it is
-# implemented, tested, scientifically checked, documented and reproducible).
+# Runtime dependencies for the implemented acquisition and provenance stages.
+# Dependencies for later geospatial/model stages remain deliberately deferred.
 dependencies = [
     "pydantic>=2",
     "pyyaml>=6",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]

@@ -55,8 +55,9 @@ aoi:
   # TODO(verify): the challenge specification is not present in this repository,
   # so no AOI geometry is defined. Do not invent coordinates.
   name: null
-  # One of: bbox | geojson_path | named_region. TODO(contract): fix the canonical
-  # representation in docs/data-contract.md before implementing acquisition.
+  # One of: bbox | geojson_path | named_region. The M1 acquisition interface
+  # accepts caller-supplied EPSG:4326 bbox/Polygon geometry; the case-study
+  # geometry itself remains deliberately unset.
   representation: null
   bbox: null          # [min_lon, min_lat, max_lon, max_lat] when representation=bbox
   geojson_path: null  # path under data/ when representation=geojson_path
@@ -73,6 +74,52 @@ event:
   # event.date; do not guess.
   window_before_days: null
   window_after_days: null
+
+# -----------------------------------------------------------------------------
+# EARTH OBSERVATION ACQUISITION (Milestone 1)
+#
+# `aoi` is deliberately null until an operator supplies the judge-selected
+# geometry. Search windows are per sensor and remain null until availability
+# around the requested event is inspected; the CLI accepts explicit overrides.
+# Catalogue credentials are environment-variable names, never secrets in Git.
+# -----------------------------------------------------------------------------
+acquisition:
+  aoi: null
+  provider:
+    name: "cdse-odata"
+    catalogue_url: "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
+    download_url_template: "https://download.dataspace.copernicus.eu/odata/v1/Products({product_id})/$value"
+    timeout_seconds: 60
+    max_results: 200
+    page_size: 100
+    credentials:
+      username_env: "CDSE_USERNAME"
+      password_env: "CDSE_PASSWORD"
+  sentinel1:
+    enabled: true
+    search_window:
+      before_days: null
+      after_days: null
+    product_types: ["IW_GRDH_1S"]
+    selection_strategy: "nearest_in_time"
+    require_same_relative_orbit: true
+    on_no_same_track_pair: "fail"
+  sentinel2:
+    enabled: true
+    search_window:
+      before_days: null
+      after_days: null
+    product_types: ["S2MSI2A", "S2MSI1C"]
+    # Explicit policy: prefer the least cloudy qualifying scene, then nearest
+    # in time. A provider cloud value is metadata only; AOI cloud is measured
+    # later from the delivered cloud mask during preprocessing.
+    selection_strategy: "least_cloud_then_nearest"
+    max_scene_cloud_percent: null
+    require_same_relative_orbit: false
+    on_no_same_track_pair: "record"
+  download:
+    enabled: false
+    destination: "data/raw"
 
 # -----------------------------------------------------------------------------
 # PRODUCTION INPUTS — permitted sources only

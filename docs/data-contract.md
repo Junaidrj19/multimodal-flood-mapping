@@ -29,11 +29,103 @@ established project facts.
 > Siwo, Sen1Floods11), EMSR927 as validation-only, and the three mandatory
 > attributions. Those are marked **VERIFIED(spec)**.
 >
-> Still unresolved and therefore still TODO/UNKNOWN rather than guessed: the AOI
-> geometry, the acquisition windows around the event date, the target grid
+> Still unresolved and therefore still TODO/UNKNOWN rather than guessed: the
+> judge-selected AOI geometry, the acquisition windows around the event date,
+> the target grid
 > CRS/resolution, the reference hub definition, and every property that can only
 > be measured from a delivered asset (delivered resolutions, CRS, vertical datum,
 > band sets, orbit tracks, dataset label semantics).
+
+## 0. Earth Observation acquisition interface (Milestone 1)
+
+Milestone 1 implements metadata acquisition in `src/floodmap/acquisition/`.
+The interface is deliberately provider-independent above
+`floodmap.acquisition.providers.cdse.CdseOdataProvider`:
+
+```text
+AreaOfInterest + EventSpec + SearchWindow
+        -> SearchRequest
+        -> SceneProvider.search()       # metadata only
+        -> SelectionOutcome              # deterministic, auditable
+        -> AcquisitionManifest           # JSON or YAML
+        -> ArtifactProvenance(ACQUISITION_MANIFEST)
+```
+
+### 0.1 AOI and time inputs
+
+- `AreaOfInterest` accepts a caller-supplied EPSG:4326 bounding box or GeoJSON
+  `Polygon`. There is no repository default geometry. `aoi_id`, CRS and the
+  `is_synthetic` flag are retained in the manifest.
+- `EventSpec` preserves an optional timezone-aware event instant. If only a
+  date is known, the whole UTC event day is excluded from both half-open search
+  windows rather than being guessed into the before or after side.
+- `SearchWindow` requires positive, explicit before/after day counts. The
+  acquisition block in `configs/data.yaml` leaves these values `null` until
+  actual availability is inspected; the CLI accepts `--before-days` and
+  `--after-days` overrides.
+
+### 0.2 CDSE OData provider
+
+`CdseOdataProvider` queries the CDSE OData Products endpoint. It emits
+percent-encoded `$filter`, `$expand=Attributes`, `$top`, `$skip` and stable
+`$orderby` parameters. The filter contains:
+
+- Sentinel-1 collection `SENTINEL-1` and product type `IW_GRDH_1S`;
+- Sentinel-2 collection `SENTINEL-2` and product types `S2MSI2A` or `S2MSI1C`;
+- the AOI intersection and the explicit UTC interval; and
+- an optional provider scene-cloud limit for Sentinel-2.
+
+Every page is parsed into `Sentinel1Scene` or `Sentinel2Scene`. A malformed
+response is a failed discovery, never a partial successful result. HTTP
+timeouts, 401/403 responses and unsuccessful provider statuses remain distinct
+through `ProviderTimeout`, `ProviderAuthError` and `ProviderHttpError`.
+Catalogue search is metadata-only. `download()` is separate, requires the
+explicit CLI `--download` flag, records byte count and SHA-256, and is disabled
+by configuration by default. `CDSE_USERNAME` and `CDSE_PASSWORD` are referenced
+by name in configuration and are never stored in the repository.
+
+### 0.3 Selection contract
+
+- Sentinel-1 selection only returns a pair whose two scenes report the same
+  integer relative orbit and compatible pass direction. Missing/explicitly
+  unknown orbit metadata produces `ORBIT_UNKNOWN`; cross-track scenes produce
+  `ORBIT_MISMATCH`. No cross-track fallback exists. When no compatible pair is
+  possible the manifest contains a `NoSameTrackPair` outcome.
+- Sentinel-2 selection partitions candidates into the configured before/after
+  windows and applies either `nearest_in_time` or
+  `least_cloud_then_nearest`. A configured scene-cloud limit is applied before
+  ranking. Missing cloud metadata is not treated as clear sky when a cloud
+  filter or cloud-aware ranking needs it.
+- Every discarded candidate is retained as a structured record with its scene
+  ID, side, `RejectionReason` and human-readable rationale. Ties are broken by
+  UTC acquisition time and scene ID.
+
+### 0.4 Manifest shape
+
+`AcquisitionManifest.to_json()` and `.to_yaml()` serialize the AOI, event,
+resolved temporal plans, exact requests/URLs, per-sensor discovery status and
+scene records, selection rationales/rejections, download outcomes, limitations
+and linked provenance. A minimal dry-run excerpt is:
+
+```yaml
+status: dry_run
+provider: cdse-odata
+aoi:
+  aoi_id: synthetic-demo
+  crs: EPSG:4326
+  is_synthetic: true
+discoveries:
+  sentinel-1:
+    status: discovery_not_attempted
+selections: {}
+provenance:
+  artifact_type: acquisition_manifest
+  production_inputs: []
+```
+
+The linked provenance record always carries the mandatory challenge
+attributions and uses `artifact_type: acquisition_manifest`. A successful
+catalogue discovery does not imply a download.
 
 ---
 
@@ -52,7 +144,7 @@ Every scene **REQUIRED** to carry:
 | `acquired_at` | REQUIRED | ISO 8601 **with timezone**. `AGENTS.md` §4 requires timestamps be preserved. |
 | `relative_orbit` | REQUIRED | Needed to verify same-track comparison. Absence must be recorded as `Unknown`, never defaulted. |
 | `orbit_direction` | REQUIRED | ASCENDING / DESCENDING. |
-| `platform` | REQUIRED | e.g. S1A / S1B / S1C. TODO(verify) which platforms are available for the event window. |
+| `platform` | REQUIRED | Provider mission/unit metadata. CDSE mission metadata is retained and the individual unit is `Unknown` when the product name does not expose a documented prefix. |
 | `product_type` | REQUIRED | TODO(verify) — GRD is the usual choice for amplitude change detection, *commonly documented — VERIFY*. |
 | `polarisations` | REQUIRED | TODO(verify) — IW mode commonly provides VV+VH, *commonly documented — VERIFY*. |
 | `incidence_angle` | REQUIRED | Needed to reason about geometric comparability. |
@@ -430,8 +522,8 @@ These hold across every source and are the contract's non-negotiable core:
 | # | Question | Blocks |
 |---|---|---|
 | 1 | Kuro Siwo label semantics: is debris/sediment distinct from water? | Debris class, product claim |
-| 2 | AOI geometry and canonical representation | Acquisition |
-| 3 | Pre/post acquisition windows around 2026-08-26 | Acquisition |
+| 2 | Judge-selected AOI geometry and canonical case-study extent | Case-study acquisition run |
+| 3 | Pre/post acquisition windows around 2026-08-26 | Case-study acquisition run |
 | 4 | Target grid CRS and resolution | Preprocessing |
 | 5 | WorldDEM-30 delivered grid and vertical datum | DEM handling, hydrology bonus |
 | 6 | ohsome API query shape and snapshot verification | OSM acquisition |
