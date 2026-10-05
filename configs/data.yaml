@@ -192,23 +192,146 @@ production:
     # Per-dataset detail. `role` is from the specification; `license` and
     # `citation` are required by AGENTS.md §18 ("Training datasets must be
     # cited according to their respective licenses and papers").
+    #
+    # VERIFIED(source) values below were read from the datasets' own primary
+    # sources — repository files, LICENSE files and the published papers — not
+    # from the challenge specification and not from recollection. The audit and
+    # its source URLs are in docs/dataset-registry.md §1.5.
+    # Properties that still require opening a delivered label raster or the
+    # paper supplement remain TODO(verify).
     datasets:
       - id: "kuro_siwo"
         name: "Kuro Siwo"
         role: "production_training_input"
         required: true
-        # TODO(verify): the spec records "MIT / CC BY". Confirm which applies to
-        # the code and which to the data before redistributing either.
-        license: "MIT / CC BY"
+        # LICENSE DISCREPANCY — UNRESOLVED. Do not collapse to one identifier.
+        #   repository LICENSE file : MIT (Copyright (c) 2024 Orion Lab)
+        #   repository README       : "The Kuro Siwo dataset is released under
+        #                              the CC BY license" (no version given)
+        #   paper body              : "Kuro Siwo is released under the MIT License"
+        #   challenge specification : "MIT"
+        # Conservative reading: treat the CODE as MIT and the DATA as CC BY
+        # (attribution required), because CC BY is the more restrictive of the
+        # two for data reuse. Attribution is required under either reading, so
+        # requiring it is safe; assuming MIT for the data would not be.
+        license_declared:
+          repository_license_file: "MIT"
+          repository_readme: "CC BY (version unstated)"
+          paper_body: "MIT"
+          challenge_specification: "MIT"
+        license_conservative: "CC BY (data) + MIT (code) — attribution required"
+        license_status: "DISCREPANCY(unresolved)"
+        redistribution_permitted: null   # Do NOT commit samples until resolved.
         citation: "Bountos et al., 2024 (NeurIPS 2024)"
-        path: null      # TODO: populate when the dataset is actually acquired
+        citation_doi: "10.52202/079017-1204"
+        # VERIFIED(source) — primary sources, see docs/dataset-registry.md §1.5.1
+        sensors: ["sentinel-1"]
+        bundled_dem: "SRTM 1Sec"        # NOT Copernicus WorldDEM-30; see §1.5.3
+        optical: false
+        polarisations: ["VV", "VH"]
+        product_levels: ["GRD", "SLC"]
+        resolution_m: 10
+        tile_size_px: 224
+        crs: "EPSG:3857"
+        # Inferred from configs/grd_preprocessing.xml: Calibration has
+        # outputImageScaleInDb=false and the graph contains no LinearToFromdB
+        # node. The papers do not state it in words, so this stays an inference.
+        backscatter_representation: "linear"
+        backscatter_representation_status: "INFERRED(repo graph) — not stated in prose"
+        temporal_structure: "triplet: 2 pre-event + 1 post-event"
+        label_classes:
+          0: "No water"
+          1: "Permanent Waters"
+          2: "Floods"
+          3: "Invalid pixels"     # ignore_index; num_classes=3
+        separates_permanent_from_flood_water: true
+        has_debris_or_sediment_class: false
+        # DISCLOSURE ONLY — not a data path, not a loader, not an input.
+        # This field records where the UPSTREAM AUTHORS' labels came from. It is
+        # material because it means our training labels inherit Copernicus EMS
+        # interpretation assumptions second-hand, which weakens the claimed
+        # independence of any later EMS-family comparison. Recording it is a
+        # disclosure obligation; acting on it would be a violation. See
+        # docs/dataset-registry.md §1.5.4 and docs/evaluation-protocol.md §7.3.
+        upstream_label_provenance: >-
+          Manual photointerpretation of the preprocessed GRD images by five SAR
+          experts, initialised from Copernicus EMS shapefiles where available.
+          The upstream authors note that errors in those annotations are
+          apparent. No EMS product is retrieved, read or referenced by this
+          pipeline; only the authors' finished labels are consumed.
+        split_type: "event_and_geography_based"
+        official_split_activation_ids:
+          test: [321, 561, 445, 562, 411, 1111002, 277, 1111007, 205, 1111013]
+          val: [514, 559, 279, 520, 437, 1111003, 1111008]
+        # GOVERNANCE: activation 1111007 is labelled act_region "Nepal" and sits
+        # in the UPSTREAM TEST split. It must not enter our training or
+        # validation split. Its only AOI is named "Patna" and its climate zone
+        # is tropical, so it is very likely lowland Ganges-plain terrain rather
+        # than Himalayan; treat it as NOT satisfying our unseen-Himalaya
+        # requirement until the AOI geometry is inspected.
+        upstream_test_activations_are_offlimits: true
+        flood_definition: null     # TODO(verify) — paper Supplemental Material
+        stated_label_noise: null   # TODO(verify) — paper Supplemental Material
+        path: null                 # TODO: populate when actually acquired
       - id: "sen1floods11"
         name: "Sen1Floods11"
         role: "optional_training_input"
         required: false
-        license: "CC BY 4.0"
+        # LICENSE GAP — MORE SERIOUS THAN A DISCREPANCY.
+        # The repository contains NO LICENSE file: the GitHub API reports
+        # "license": null and the root listing has no LICENSE/COPYING file. The
+        # README makes no licence statement. The CVPR page carries only the
+        # CVF's standard "rights retained by authors" boilerplate, which covers
+        # the paper rather than the data. The challenge specification's
+        # "CC BY 4.0" could NOT be confirmed against any primary source.
+        # Conservative reading: no redistribution right is established. Use is
+        # permitted (the data is published openly by the authors) but the data
+        # must not be re-published from this repository, and the licence must be
+        # resolved with the authors before any sample is committed.
+        license_declared:
+          repository_license_file: "ABSENT"
+          repository_readme: "no licence statement"
+          paper: "CVF boilerplate only; no dataset licence"
+          challenge_specification: "CC BY 4.0"
+        license_conservative: "UNDETERMINED — no redistribution right established"
+        license_status: "UNVERIFIED(no license file upstream)"
+        redistribution_permitted: false
         citation: "Bonafilia et al., 2020 (CVPRW 2020)"
-        path: null      # TODO: populate when the dataset is actually acquired
+        # VERIFIED(source) — primary sources, see docs/dataset-registry.md §1.5.2
+        sensors: ["sentinel-1", "sentinel-2"]
+        bundled_dem: null
+        optical: true
+        polarisations: ["VV", "VH"]
+        product_levels: ["GRD"]
+        resolution_m: 10
+        tile_size_px: 512
+        crs: "EPSG:4326"
+        # Google Earth Engine S1 GRD preprocessing: thermal noise removal,
+        # radiometric calibration, terrain correction, then 10*log10 log scaling.
+        backscatter_representation: "decibel"
+        backscatter_representation_status: "VERIFIED(source) — README states 'Unit: dB'"
+        optical_processing_level: "L1C"      # TOA reflectance, NOT L2A surface
+        optical_bands: "all 13 (B1-B12 incl. B8A)"
+        optical_scaling: "TOA reflectance scaled by 10000"
+        optical_quality_mask_included: false
+        # S1 and S2 acquisition dates are close but NOT always identical;
+        # observed offsets of up to 2 days across events.
+        s1_s2_dates_identical: false
+        temporal_structure: "single post-event acquisition (no pre-event image)"
+        label_classes:
+          -1: "No Data / Not Valid"
+          0: "Not Water"
+          1: "Water"
+        separates_permanent_from_flood_water: false
+        has_debris_or_sediment_class: false
+        upstream_label_provenance: >-
+          446 hand-annotated chips; plus 4385 weak chips from Otsu thresholding
+          of the S1 VH band, 4385 weak chips from traditional Sentinel-2
+          classification, and 815 permanent-water chips derived from the JRC
+          surface-water dataset.
+        split_type: "event_based"
+        events: 11                 # 12 entries in the metadata; Colombia added later
+        path: null                 # TODO: populate when actually acquired
 
 # -----------------------------------------------------------------------------
 # VALIDATION-ONLY SOURCES — never production inputs

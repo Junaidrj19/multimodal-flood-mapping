@@ -42,12 +42,13 @@ does it work on Himalayan terrain it has never seen?"**
 | **validation** | Model selection, hyperparameters, early stopping, checkpoint selection, **decision threshold**. | Yes — this is its job. |
 | **unseen_himalaya_test** | Final reported generalisation performance. | **No. Never.** |
 
-Configured in `configs/evaluation.yaml → splits`. The permitted datasets are
-now specified — Kuro Siwo and Sen1Floods11 (`docs/dataset-registry.md` §1.5)
-— but the scene lists remain empty, because populating a split requires the
-actual scene geometries and any official splits the datasets ship with.
-Inventing split membership now would be the leakage risk this protocol
-exists to prevent.
+Configured in `configs/evaluation.yaml → splits`. Both permitted datasets have
+now been audited (`docs/dataset-registry.md` §1.5) and **both ship official
+event-based splits**, which removes the main reason the scene lists were empty.
+They remain empty pending acquisition, but they are no longer unconstrained:
+§2.4 fixes which activations are off-limits, and §2.5 fixes the label
+harmonisation rule. Inventing split membership would still be the leakage risk
+this protocol exists to prevent.
 
 ### 2.2 Splits must be spatial, not random
 
@@ -79,6 +80,95 @@ Required by `PRD.md` §3 goal 3 and `AGENTS.md` §5.
   - `may_be_used_for_checkpoint_selection: false`
 - **If it is inspected more than once, it is no longer unseen** and must be
   reported as a validation set instead. Repeated evaluation is tuning by hand.
+
+### 2.4 Upstream splits are binding
+
+Both corpora ship official event/geography-based splits, and honouring them is
+a rule rather than a courtesy.
+
+**Kuro Siwo** — from `configs/train/data_config.json`, by activation id:
+
+| Upstream split | Activation IDs | Our permitted use |
+|---|---|---|
+| test | `321, 561, 445, 562, 411, 1111002, 277, 1111007, 205, 1111013` | **Never train or validate on these.** |
+| val | `514, 559, 279, 520, 437, 1111003, 1111008` | Validation only. |
+| train | remaining 27 of 43 | Training. |
+
+**Sen1Floods11** — splits are per-event in its metadata, with the split files in
+the dataset bucket. Exact test composition is TODO(verify) until downloaded;
+until then no Sen1Floods11 chip may be assigned to a split.
+
+**Why this is a real rule and not bookkeeping.** If we train on an upstream test
+activation, every published number from other work on Kuro Siwo becomes
+incomparable to ours — theirs is measured on held-out scenes, ours on scenes we
+fitted. The comparison would silently favour us. `assert_disjoint_scene_ids`
+must therefore be checked against the **upstream** split assignment, not only
+against our own.
+
+> Recorded machine-readably at
+> `configs/data.yaml → production.training_datasets.datasets[kuro_siwo].official_split_activation_ids`
+> with `upstream_test_activations_are_offlimits: true`.
+
+### 2.5 Label harmonisation rule
+
+The two corpora do not share a label taxonomy
+(`docs/data-contract.md` §5.3): Kuro Siwo is 3-class and separates permanent
+water from flood water; Sen1Floods11 is binary surface water.
+
+The mapping is **asymmetric**, and only one direction is defined:
+
+```text
+Kuro Siwo {Permanent Waters, Floods} --lossy--> {Water}        DEFINED
+Sen1Floods11 {Water} --> {Permanent Waters, Floods}            NOT POSSIBLE
+```
+
+**Rules:**
+
+1. **A naive union of the two corpora under one head is forbidden.** It would
+   either relabel Sen1Floods11 water as a class it does not carry, or discard
+   Kuro Siwo's permanent-vs-flood distinction without saying so.
+2. If both corpora are used, they must be used under **separate heads or
+   separate training stages**, with the mapping direction recorded per source.
+3. Any run that collapses Kuro Siwo to binary **must report that the
+   permanent-water distinction was discarded**, because that distinction is the
+   defence against reporting the river as flood
+   (`docs/scientific-assumptions.md` §7).
+4. `configs/segmentation.yaml → classes.label_mapping` records the mapping
+   **per source dataset**, never as a single global map.
+5. Sen1Floods11's `-1` and Kuro Siwo's `3` are both ignore values and must be
+   excluded from loss and from every metric — not mapped to a negative class.
+   Treating "no data" as "not water" would make unobserved pixels count as
+   correct negatives and inflate every score.
+
+### 2.6 There is no labelled Himalayan test set in the permitted data
+
+The most consequential finding of the dataset audit
+(`docs/dataset-registry.md` §5.3).
+
+Neither corpus is documented as containing Himalayan or high-mountain terrain.
+Kuro Siwo's only Nepal-labelled activation is tropical and lowland by its own
+metadata **and** sits in the upstream test split. Sen1Floods11's nearest
+approaches are sub-Himalayan foothills that no source characterises as
+mountainous.
+
+`PRD.md` §3 goal 3 requires evaluation on unseen Himalayan scenes. That
+requirement cannot be satisfied with permitted *labels*, so the protocol splits
+it into two separately-reported things rather than pretending one exists:
+
+| Report | What it is | What it is not |
+|---|---|---|
+| **Held-out generalisation** | Metrics on the most Himalaya-like held-out permitted scenes available (steepest terrain, highest relief), using permitted labels. Stratified by slope and elevation per §6.1. | Not Himalayan performance. A proxy, and labelled as a proxy. |
+| **Trishuli spatial agreement** | Agreement between our frozen prediction and EMSR927 over the real Himalayan AOI. | **Not accuracy.** EMSR927 is a comparison reference, not ground truth, and it is read once after freezing (§7.3). |
+
+**Both must be reported, and neither may be presented as the other.** Quoting
+the proxy as "unseen-Himalaya IoU" would overstate what was measured; quoting
+the EMSR927 agreement as accuracy would treat a reference product as truth.
+
+The expected consequence — stated now, before measurement, so it cannot be
+rationalised later — is that the gap between in-domain and Himalaya-like
+performance will be **large**, because no permitted corpus teaches the model
+high-relief radar geometry, snow/ice confusion, or steep-terrain shadow and
+layover. Per `AGENTS.md` §6 that gap is itself a headline result.
 
 ---
 
@@ -266,13 +356,61 @@ accuracy.
   right **and** the buffer being reasonable **and** OSM being complete **and**
   the graph model being valid.
 
-### 7.3 Case study comparison
+### 7.3 Case study comparison — the EMSR927 freeze protocol
 
-- EMSR927 comparison runs **after** the production analysis is complete
-  (`architecture.md` §11).
+EMSR927 is **validation-only** (`AGENTS.md` §3, `architecture.md` §18.1). It must
+never enter training, feature generation, preprocessing, threshold tuning, model
+selection or production inference. The following procedure is what makes that
+enforceable rather than aspirational, and the ordering is the whole point.
+
+**Freeze gate — every item must be true and recorded BEFORE EMSR927 is fetched:**
+
+1. Model architecture, weights and checkpoint are final and hashed.
+2. The decision threshold is selected on **validation** and frozen (§5).
+3. Normalisation statistics are fixed and training-split-derived.
+4. The production prediction for the Trishuli AOI exists on disk, with its
+   `ArtifactProvenance` written and its `generated_at` timestamp recorded.
+5. `configs/evaluation.yaml → reference_comparison.enabled` is still `false`.
+
+**Then, and only then:**
+
+6. Flip `reference_comparison.enabled` to `true` as an explicit, reviewable act.
+7. Retrieve EMSR927. Record its retrieval timestamp — it must be **later** than
+   the prediction artifact's `generated_at`. That timestamp ordering is the
+   audit evidence that the reference could not have influenced the prediction.
+8. Compute spatial agreement. Report it as **agreement**, never as accuracy,
+   precision or recall against ground truth.
+9. Carry the EMS attribution on the comparison artifact and in the report
+   section that presents it: *"European Union, Copernicus Emergency Management
+   Service data"*.
+
+**After the comparison, nothing may change.** If the comparison is disappointing
+and the model, threshold or features are then adjusted, EMSR927 has become a
+tuning signal and the result is void. A revised model requires the whole
+protocol to restart from a fresh freeze, and the report must disclose that the
+comparison was run more than once.
+
+**Interpretation constraints:**
+
 - Reported as spatial agreement, **not** accuracy against ground truth.
-- Reference products carry their own method and timing assumptions; disagreement
-  is not automatically our error.
+- Reference products carry their own method, timing and interpretation
+  assumptions; disagreement is not automatically our error, and agreement is not
+  proof of correctness (`docs/scientific-assumptions.md` §10.4).
+- EMSR927's acquisition time almost certainly differs from ours, so part of any
+  disagreement is temporal rather than methodological (§5 of
+  `docs/scientific-assumptions.md`).
+- The dashboard must not visually imply EMSR927 is an input layer
+  (`AGENTS.md` §16).
+
+> **Independence caveat — disclosed, not hidden.** Kuro Siwo's labels were
+> *initialised from Copernicus EMS shapefiles* before expert photointerpretation
+> (`docs/dataset-registry.md` §1.5.4). A model trained on Kuro Siwo therefore
+> inherits CEMS interpretation conventions second-hand, and an EMS-family
+> reference product shares those conventions. The comparison is consequently
+> **not** between two fully independent methods, and agreement is weaker
+> evidence than it appears. This does not breach the boundary — no EMS product
+> is read by our pipeline, and EMSR927 postdates Kuro Siwo entirely — but it
+> must be stated wherever the comparison is presented.
 
 ---
 
@@ -321,13 +459,30 @@ Every evaluation result carries an `ArtifactProvenance` record
 
 ## 10. Blocking items
 
-1. **Official dataset splits** — if Kuro Siwo or Sen1Floods11 ship their own
-   train/val/test splits, they must be honoured; ignoring them risks reusing
-   upstream test scenes as our training data. Unknown until acquired.
-2. **Himalayan evaluation scenes** — not identified; requires dataset scene
-   geometry and the AOI definition.
-3. **Spatial buffer between splits** — TODO; requires scene geometry.
-4. **Threshold selection criterion** — TODO; must be declared before the sweep.
-5. **Class set** — depends on whether Kuro Siwo labels distinguish flood water
-   from debris. If they do not, the product claim narrows to flood water
-   (`docs/scientific-assumptions.md` §9).
+### 10.1 Resolved by the dataset audit
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Official dataset splits | **RESOLVED.** Both event-based. Kuro Siwo's activation IDs recorded; honouring them is now a rule (§2.4). |
+| 2 | Class set / debris question | **RESOLVED.** Neither corpus labels debris. The segmentation claim narrows to flood water; see `docs/m4-architecture-decision.md` §6. |
+| 3 | Label harmonisation rule | **RESOLVED.** Specified in §2.5; the mapping is asymmetric and a naive union is forbidden. |
+
+### 10.2 Still blocking
+
+1. **Himalayan evaluation data does not exist in the permitted corpora.** Not a
+   gap in our knowledge any more — a measured property of the permitted data
+   (§2.6, `docs/dataset-registry.md` §5.3). The protocol now reports a labelled
+   proxy and an unlabelled EMSR927 agreement separately. Closing this properly
+   would require a permitted Himalayan labelled source, which the closed
+   training list does not provide.
+2. **Spatial buffer between splits** — TODO; requires scene geometry.
+3. **Threshold selection criterion** — TODO; must be declared before the sweep.
+4. **Sen1Floods11 exact test-split composition** — split files not downloaded;
+   until then no chip may be assigned to a split (§2.4).
+5. **Kuro Siwo flood definition** — in the paper's Supplemental Material, unread.
+   Required before the label mapping is frozen, because our `Floods` class
+   semantics inherit theirs.
+6. **Kuro Siwo stated label noise** — unread; bounds how much of any residual
+   error is attributable to the model rather than the labels.
+7. **UNOSAT citation format** — required before publishing any comparison
+   against it.

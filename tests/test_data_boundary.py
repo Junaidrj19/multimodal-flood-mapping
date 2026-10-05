@@ -119,12 +119,81 @@ class TestProductionCodeIsClean:
 
 
 class TestConfigBoundary:
+    #: Keys inside ``production:`` that may legitimately *name* a validation-only
+    #: source because their whole purpose is disclosure.
+    #:
+    #: Kuro Siwo's labels were initialised from Copernicus EMS shapefiles by the
+    #: upstream authors. That is a fact about a permitted training dataset's
+    #: label ancestry, and suppressing it to satisfy a text scan would hide a
+    #: real scientific caveat: our training labels inherit EMS interpretation
+    #: assumptions second-hand, which bears on how independent any later
+    #: EMS-family comparison can claim to be.
+    #:
+    #: So the guard allows the marker inside these named disclosure fields only,
+    #: and still fails if it appears anywhere a loader could act on it — a path,
+    #: a URL, or any other key. Narrow by construction: a new key name has to be
+    #: added here deliberately.
+    DISCLOSURE_ONLY_KEYS = ("upstream_label_provenance",)
+
+    @staticmethod
+    def _strip_disclosure_fields(node):
+        """Recursively drop documented disclosure-only values before scanning."""
+        if isinstance(node, dict):
+            return {
+                key: TestConfigBoundary._strip_disclosure_fields(value)
+                for key, value in node.items()
+                if key not in TestConfigBoundary.DISCLOSURE_ONLY_KEYS
+            }
+        if isinstance(node, list):
+            return [TestConfigBoundary._strip_disclosure_fields(item) for item in node]
+        return node
+
     def test_production_block_has_no_validation_only_source(self):
         config = yaml.safe_load((REPO_ROOT / "configs" / "data.yaml").read_text(encoding="utf-8"))
-        found = _contains_forbidden_marker(yaml.safe_dump(config["production"]))
+        scanned = self._strip_disclosure_fields(config["production"])
+        found = _contains_forbidden_marker(yaml.safe_dump(scanned))
         assert (
             not found
         ), f"validation-only source inside configs/data.yaml production block: {found}"
+
+    def test_disclosure_exemption_is_narrow_and_still_catches_a_real_path(self):
+        """The exemption must not become a general hole.
+
+        Verifies the stripper removes only the named disclosure keys, so an EMS
+        reference smuggled in as a path, URL or any other field is still caught.
+        """
+        sample = {
+            "training_datasets": {
+                "datasets": [
+                    {
+                        "id": "kuro_siwo",
+                        "upstream_label_provenance": "initialised from Copernicus EMS shapefiles",
+                        "path": "data/raw/EMSR927/labels.shp",
+                    }
+                ]
+            }
+        }
+        stripped = self._strip_disclosure_fields(sample)
+        dumped = yaml.safe_dump(stripped)
+        assert "upstream_label_provenance" not in dumped
+        # The forbidden path survives stripping and is still detected.
+        assert _contains_forbidden_marker(dumped) == ["emsr927"]
+
+    def test_disclosure_field_is_actually_present_upstream(self):
+        """A stale exemption would quietly widen the hole it was meant to describe."""
+        config = yaml.safe_load((REPO_ROOT / "configs" / "data.yaml").read_text(encoding="utf-8"))
+        datasets = config["production"]["training_datasets"]["datasets"]
+        assert any(
+            "upstream_label_provenance" in dataset for dataset in datasets
+        ), "the disclosure exemption is unused; remove it rather than leaving it open"
+
+    def test_no_training_dataset_declares_a_validation_only_path(self):
+        """Disclosure is fine; a loadable path to a forbidden product is not."""
+        config = yaml.safe_load((REPO_ROOT / "configs" / "data.yaml").read_text(encoding="utf-8"))
+        for dataset in config["production"]["training_datasets"]["datasets"]:
+            path = dataset.get("path")
+            if path:
+                assert not _contains_forbidden_marker(str(path)), dataset["id"]
 
     def test_production_block_lists_only_permitted_sources(self):
         from floodmap.utils.provenance import (

@@ -151,10 +151,93 @@ class TestConfigScientificGuards:
         assert [d["id"] for d in td["datasets"]] == ["kuro_siwo", "sen1floods11"]
 
     def test_training_datasets_carry_license_and_citation(self):
-        """AGENTS.md §18 — datasets must be cited per license and paper."""
+        """AGENTS.md §18 — datasets must be cited per license and paper.
+
+        Licence is asserted as a *structure*, not a single string. Both
+        permitted datasets have a licence problem that a lone identifier would
+        erase: Kuro Siwo's LICENSE file says MIT while its README says CC BY,
+        and Sen1Floods11 has no licence file at all. The audit recorded each
+        declaration separately plus a conservative reading, so these tests pin
+        that the discrepancy survives rather than being tidied into a claim.
+        """
         for dataset in load_config("data")["production"]["training_datasets"]["datasets"]:
-            assert dataset["license"], f"{dataset['id']} has no license"
             assert dataset["citation"], f"{dataset['id']} has no citation"
+            declared = dataset["license_declared"]
+            assert isinstance(declared, dict) and declared, f"{dataset['id']} has no declarations"
+            assert dataset["license_conservative"], f"{dataset['id']} has no conservative reading"
+            assert dataset["license_status"], f"{dataset['id']} has no licence status"
+
+    def test_license_discrepancies_are_preserved_not_collapsed(self):
+        """A single `license:` key would silently assert something unverified."""
+        datasets = {
+            d["id"]: d for d in load_config("data")["production"]["training_datasets"]["datasets"]
+        }
+
+        kuro = datasets["kuro_siwo"]
+        assert kuro["license_status"].startswith("DISCREPANCY")
+        assert kuro["license_declared"]["repository_license_file"] == "MIT"
+        assert "CC BY" in kuro["license_declared"]["repository_readme"]
+        # Conservative reading must be the more restrictive one for the data.
+        assert "CC BY" in kuro["license_conservative"]
+
+        sen1 = datasets["sen1floods11"]
+        assert sen1["license_declared"]["repository_license_file"] == "ABSENT"
+        assert sen1["license_status"].startswith("UNVERIFIED")
+        assert sen1["redistribution_permitted"] is False
+
+    def test_no_training_dataset_claims_a_debris_class(self):
+        """Verified against both corpora's own class definitions.
+
+        Neither Kuro Siwo nor Sen1Floods11 labels debris, sediment or mud. This
+        is pinned because flipping either flag to true would license a product
+        claim the training labels cannot support (PRD.md FR-06).
+        """
+        for dataset in load_config("data")["production"]["training_datasets"]["datasets"]:
+            assert (
+                dataset["has_debris_or_sediment_class"] is False
+            ), f"{dataset['id']}: a debris class claim requires label evidence"
+
+    def test_label_class_maps_are_recorded_for_both_datasets(self):
+        datasets = {
+            d["id"]: d for d in load_config("data")["production"]["training_datasets"]["datasets"]
+        }
+        kuro = datasets["kuro_siwo"]["label_classes"]
+        assert kuro[0] == "No water"
+        assert kuro[1] == "Permanent Waters"
+        assert kuro[2] == "Floods"
+        assert datasets["kuro_siwo"]["separates_permanent_from_flood_water"] is True
+
+        sen1 = datasets["sen1floods11"]["label_classes"]
+        assert sen1[0] == "Not Water"
+        assert sen1[1] == "Water"
+        assert datasets["sen1floods11"]["separates_permanent_from_flood_water"] is False
+
+    def test_backscatter_representations_differ_between_corpora(self):
+        """The harmonisation requirement must stay visible in configuration.
+
+        Kuro Siwo is linear power, Sen1Floods11 is decibels. Combining them
+        without converting one would train across two unit systems, so the
+        mismatch is pinned rather than left to be rediscovered.
+        """
+        datasets = {
+            d["id"]: d for d in load_config("data")["production"]["training_datasets"]["datasets"]
+        }
+        assert datasets["kuro_siwo"]["backscatter_representation"] == "linear"
+        assert datasets["sen1floods11"]["backscatter_representation"] == "decibel"
+
+    def test_upstream_test_activations_are_marked_off_limits(self):
+        """Kuro Siwo ships official splits; reusing its test events would leak."""
+        kuro = next(
+            d
+            for d in load_config("data")["production"]["training_datasets"]["datasets"]
+            if d["id"] == "kuro_siwo"
+        )
+        assert kuro["upstream_test_activations_are_offlimits"] is True
+        splits = kuro["official_split_activation_ids"]
+        assert splits["test"] and splits["val"]
+        # The Nepal-labelled activation sits in the upstream test split.
+        assert 1111007 in splits["test"]
+        assert not set(splits["test"]) & set(splits["val"]), "upstream splits overlap"
 
     def test_detail_entries_match_the_allowed_list(self):
         """The two representations of the permitted list cannot drift apart."""
@@ -245,6 +328,132 @@ class TestConfigScientificGuards:
         ):
             assert checks[key] is True, f"alignment check {key} must be enabled"
         assert checks["on_failure"] == "fail"
+
+
+class TestAuditedTrainingDatasetFacts:
+    """Pin the dataset-audit findings that govern the M4 architecture.
+
+    These are not preferences. Each one was read from a primary source
+    (repository file, LICENSE file or paper) and each one, if silently flipped,
+    would license a scientific claim the data does not support. The audit and
+    its source URLs are in ``docs/dataset-registry.md`` §1.5.
+    """
+
+    @staticmethod
+    def _datasets():
+        return {
+            d["id"]: d for d in load_config("data")["production"]["training_datasets"]["datasets"]
+        }
+
+    def test_neither_corpus_separates_debris_from_water(self):
+        """The decision to narrow the product claim rests on this."""
+        for dataset_id, dataset in self._datasets().items():
+            assert (
+                dataset["has_debris_or_sediment_class"] is False
+            ), f"{dataset_id}: a debris class claim requires label evidence"
+
+    def test_kuro_siwo_separates_permanent_water_from_flood_water(self):
+        """The main reason Kuro Siwo is usable for a river valley.
+
+        Without this distinction the Trishuli river itself is reported as flood
+        on every run (docs/scientific-assumptions.md §7).
+        """
+        assert self._datasets()["kuro_siwo"]["separates_permanent_from_flood_water"] is True
+
+    def test_sen1floods11_does_not_separate_permanent_water(self):
+        """Why a naive union of the two corpora is forbidden."""
+        assert self._datasets()["sen1floods11"]["separates_permanent_from_flood_water"] is False
+
+    def test_label_class_maps_are_recorded_verbatim(self):
+        kuro = self._datasets()["kuro_siwo"]["label_classes"]
+        assert kuro[0] == "No water"
+        assert kuro[1] == "Permanent Waters"
+        assert kuro[2] == "Floods"
+        assert kuro[3] == "Invalid pixels"
+        sen1 = self._datasets()["sen1floods11"]["label_classes"]
+        assert sen1[-1] == "No Data / Not Valid"
+        assert sen1[0] == "Not Water"
+        assert sen1[1] == "Water"
+
+    def test_the_two_corpora_disagree_on_backscatter_representation(self):
+        """The reason M3's representation gate is per corpus, not global.
+
+        Kuro Siwo is linear sigma-nought, Sen1Floods11 is decibels. Reading
+        either under the other's setting would silently corrupt every SAR
+        feature while producing a plausible-looking raster.
+        """
+        datasets = self._datasets()
+        assert datasets["kuro_siwo"]["backscatter_representation"] == "linear"
+        assert datasets["sen1floods11"]["backscatter_representation"] == "decibel"
+
+    def test_kuro_siwo_representation_is_marked_as_inferred(self):
+        """It was read from a SNAP graph, not stated in prose. Do not promote it."""
+        status = self._datasets()["kuro_siwo"]["backscatter_representation_status"]
+        assert status.startswith("INFERRED")
+
+    def test_only_sen1floods11_provides_optical_data(self):
+        """Why the required corpus cannot supervise optical channels."""
+        datasets = self._datasets()
+        assert datasets["kuro_siwo"]["optical"] is False
+        assert datasets["sen1floods11"]["optical"] is True
+
+    def test_sen1floods11_optical_is_toa_not_surface_reflectance(self):
+        """L1C vs our planned L2A is a silent index-level domain shift."""
+        assert self._datasets()["sen1floods11"]["optical_processing_level"] == "L1C"
+
+    def test_neither_corpus_bundles_the_production_dem(self):
+        """Kuro Siwo ships SRTM; production uses WorldDEM-30."""
+        datasets = self._datasets()
+        assert datasets["kuro_siwo"]["bundled_dem"] == "SRTM 1Sec"
+        assert datasets["sen1floods11"]["bundled_dem"] is None
+        production_dem = load_config("data")["production"]["dem"]["product"]
+        assert datasets["kuro_siwo"]["bundled_dem"] != production_dem
+
+    def test_upstream_test_activations_are_recorded_and_off_limits(self):
+        """Training on an upstream test event voids comparison with published work."""
+        kuro = self._datasets()["kuro_siwo"]
+        assert kuro["upstream_test_activations_are_offlimits"] is True
+        test_ids = kuro["official_split_activation_ids"]["test"]
+        val_ids = kuro["official_split_activation_ids"]["val"]
+        assert test_ids and val_ids
+        assert not set(test_ids) & set(val_ids), "upstream splits must be disjoint"
+        # The Nepal-labelled activation sits in the upstream test split.
+        assert 1111007 in test_ids
+
+    def test_neither_corpus_may_be_redistributed_from_this_repository(self):
+        """Licences are unresolved; committing a sample would be a legal defect."""
+        datasets = self._datasets()
+        assert datasets["sen1floods11"]["redistribution_permitted"] is False
+        assert datasets["kuro_siwo"]["redistribution_permitted"] is None
+
+    def test_sen1floods11_has_no_pre_event_image(self):
+        """It therefore cannot supervise any change feature."""
+        assert "no pre-event image" in self._datasets()["sen1floods11"]["temporal_structure"]
+
+    def test_kuro_siwo_provides_pre_event_imagery(self):
+        """Its triplet is what lets change features be supervised at all."""
+        assert "pre-event" in self._datasets()["kuro_siwo"]["temporal_structure"]
+
+
+class TestValidationOnlyAttributionIsNotGlobal:
+    """The EMS attribution must not be attached to production artifacts.
+
+    ``REQUIRED_ATTRIBUTIONS`` is attached to *every* ``ArtifactProvenance``.
+    Adding the Copernicus EMS string there would stamp an EMS credit onto
+    acquisition manifests, preprocessed rasters and feature stacks that EMS
+    never contributed to — which would imply exactly the input relationship
+    AGENTS.md §3 forbids. It belongs only on the comparison artifact.
+    """
+
+    EMS_ATTRIBUTION = "European Union, Copernicus Emergency Management Service data"
+
+    def test_ems_attribution_is_not_in_the_global_required_set(self):
+        for required in REQUIRED_ATTRIBUTIONS:
+            assert "Emergency Management" not in required
+
+    def test_ems_attribution_is_not_in_the_config_required_set(self):
+        for required in load_config("data")["attribution"]["required"]:
+            assert "Emergency Management" not in required
 
 
 class TestConfigFilesAreValidYaml:

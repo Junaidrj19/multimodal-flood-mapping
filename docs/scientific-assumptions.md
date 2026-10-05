@@ -236,17 +236,43 @@ snow/ice presence, land cover, river morphology and — critically — **debris
 composition**: a rock-and-ice avalanche footprint may be unlike anything in the
 training labels. `PRD.md` §13 lists label/domain shift as a risk.
 
+**Now measured, not merely suspected.** The dataset audit
+(`docs/dataset-registry.md` §1.5, §5.3) confirms that **neither permitted corpus
+is documented as containing Himalayan or high-mountain terrain**. Kuro Siwo's
+only Nepal-labelled activation is tropical and lowland by its own metadata *and*
+sits in its upstream test split; Sen1Floods11's nearest approaches are
+sub-Himalayan foothills that no source describes as mountainous.
+
+So the domain shift is **unmitigated by the permitted training data**, and there
+is **no labelled Himalayan test set** inside it either.
+
 **Consequence:**
-- A dedicated **unseen-Himalaya** evaluation split, used once, after tuning is
-  frozen (`AGENTS.md` §5, `docs/evaluation-protocol.md`).
-- Both in-domain and unseen-Himalaya metrics are reported; the **gap between
-  them is itself a headline result**, not a footnote.
+- A dedicated held-out evaluation, used once, after tuning is frozen
+  (`AGENTS.md` §5, `docs/evaluation-protocol.md`).
+- Because no permitted Himalayan labels exist, the unseen-Himalaya requirement is
+  reported as **two separate things that must not be conflated**
+  (`docs/evaluation-protocol.md` §2.6): a labelled *Himalaya-like proxy*
+  (steepest, highest-relief held-out permitted scenes, stratified by slope), and
+  an unlabelled *EMSR927 spatial agreement* over the real AOI, read once after
+  the freeze gate.
+- Both in-domain and proxy metrics are reported; the **gap between them is
+  itself a headline result**, not a footnote. The gap should be expected to be
+  large, and that expectation is recorded here *before* measurement so it cannot
+  be rationalised afterwards.
 - `AGENTS.md` §6: a strong score on an easy random split is not evidence of
   Himalayan generalisation.
-- **Open risk:** if the permitted training datasets label only open water and not
-  debris, then debris cannot be predicted and the product claim must be narrowed
-  from "flood/debris" to "flood water". This is currently **UNKNOWN** because the
-  dataset list is unavailable (`docs/dataset-registry.md` §1.5).
+- **Resolved, and negatively: the debris risk is now a fact.** Neither corpus
+  labels debris, sediment or mud — Kuro Siwo is
+  `{No water, Permanent Waters, Floods, Invalid}` and Sen1Floods11 is
+  `{No Data, Not Water, Water}`, both exhaustive. Supervised debris segmentation
+  is therefore impossible within the closed permitted list. **The product claim
+  narrows from "flood/debris" to "flood water."** See
+  `docs/m4-architecture-decision.md` §6 for the decision and the permitted
+  alternatives.
+- **One compensation worth stating:** Kuro Siwo *does* separate permanent water
+  from flood water. That directly supplies the distinction §7 of this document
+  demands, and it is the main reason the primary training corpus is usable at
+  all for a river valley.
 
 ---
 
@@ -316,4 +342,8 @@ Recorded so a later agent does not mistake silence for a decision:
 | Road classes in scope | **Not decided.** Including footpaths materially changes connectivity. |
 | Reference hub definition | **Not operationalised.** |
 | Target grid CRS/resolution | **Not set.** Depends on AOI and product resolutions. |
-| Permitted training datasets | **Specified:** Kuro Siwo (required), Sen1Floods11 (optional). Their label semantics are **not** yet known. |
+| Permitted training datasets | **Specified and audited:** Kuro Siwo (required), Sen1Floods11 (optional). Label semantics now **verified** from primary sources (`docs/dataset-registry.md` §1.5). |
+| Debris segmentation | **Decided — NOT POSSIBLE.** No permitted corpus labels debris. Product claim narrowed to flood water (`docs/m4-architecture-decision.md` §6). |
+| Segmentation architecture family | **Decided:** SAR-learned core, with Sentinel-2 and DEM as deterministic downstream evidence rather than unsupervised input channels (`docs/m4-architecture-decision.md` §3). The *network* architecture remains unselected and must follow measured performance. |
+| Sentinel-2 role | **Decided:** deterministic optical confirmation and independent change evidence; may never create a detection (`docs/m4-architecture-decision.md` §4). |
+| DEM role | **Decided:** terrain plausibility and SAR-geometry error stratification; not a baseline model input (`docs/m4-architecture-decision.md` §5). |
