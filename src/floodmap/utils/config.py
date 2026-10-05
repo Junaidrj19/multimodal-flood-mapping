@@ -19,9 +19,16 @@ from typing import Any, Dict, List
 import yaml
 
 #: Configuration files expected by ``architecture.md`` §14.
+#:
+#: ``features`` is not in the architecture document's original four-file list.
+#: It was added when Milestone 3 began consuming feature parameters, because
+#: ``AGENTS.md`` §14 requires them to live in configuration rather than in
+#: feature functions, and folding them into ``segmentation.yaml`` would put the
+#: feature contract inside the file that owns model and threshold choices.
 EXPECTED_CONFIGS: tuple[str, ...] = (
     "data",
     "preprocessing",
+    "features",
     "segmentation",
     "evaluation",
 )

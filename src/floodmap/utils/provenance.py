@@ -27,9 +27,12 @@ Two design decisions worth stating
 
 Status
 ------
-The acquisition stage populates ACQUISITION_MANIFEST records and the M2
-preprocessing stage populates PREPROCESSED_RASTER records linked to those
-manifests.
+Three artifact types are populated so far, each linked to the one before it:
+ACQUISITION_MANIFEST by the M1 acquisition stage, PREPROCESSED_RASTER by the M2
+preprocessing stage, and FEATURE_STACK by the M3 feature stage. A feature
+record carries the acquisition manifest ID and the before/after scene pairs
+forward from its M2 inputs, so the chain from a generated feature band back to
+the original source scenes is traversable without re-reading the whole pipeline.
 """
 
 from __future__ import annotations

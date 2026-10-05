@@ -26,10 +26,19 @@ this mechanically.
 
 Implementation status
 ---------------------
-This release establishes the foundation only. ``floodmap.utils`` contains the
-provenance schema and configuration loader. Every other subpackage is a
-documented, deliberately empty namespace awaiting its own milestone — see
-``README.md`` §14 for the implementation order.
+Implemented: ``floodmap.utils`` (provenance schema, configuration loader),
+``floodmap.acquisition`` (M1 metadata discovery, selection, manifests),
+``floodmap.preprocessing`` (M2 analysis-ready rasters) and
+``floodmap.features`` (M3 feature generation).
+
+The pipeline currently ends at model-ready feature artifacts. ``segmentation``,
+``infrastructure``, ``network``, ``hydrology``, ``evaluation`` and ``reporting``
+remain documented, deliberately empty namespaces awaiting their own milestones —
+see ``README.md`` §14 for the implementation order.
+
+No model has been trained and no performance has been measured. Every
+implemented stage is gated on configuration that is still unresolved, so a
+production run fails explicitly rather than proceeding on defaults.
 """
 
 __version__ = "0.1.0"

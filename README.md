@@ -111,6 +111,8 @@ validated, aligned rasters, valid-observation masks, QA metadata and linked
 provenance. It does not invent the real AOI or run production preprocessing
 while the target grid and source products remain unresolved.
 
+M3 consumes those M2 artifacts and writes model-ready features (§5.1).
+
 ### Validation-only sources
 
 - Copernicus EMS / EMSR927
@@ -121,6 +123,61 @@ These may be used to check results but must never become model or
 production-system inputs.
 
 ## 5. AI component
+
+### 5.1 Feature generation (implemented)
+
+Milestone 3 converts M2 analysis-ready products into model-ready features. It
+is the last stage before the model, and it deliberately stops there: **M3
+applies no threshold, produces no class label, and makes no flood/debris
+decision.** A feature is evidence for the segmentation model, not a finding
+about the surface.
+
+Every feature is declared in a machine-readable registry written beside the
+raster, carrying its physical meaning, source sensor, inputs, exact formula,
+units, dtype, declared range, nodata policy, version and scientific rationale.
+A later model can therefore inspect `feature_registry.json` and know exactly
+what each input channel represents. Full specification:
+`docs/data-contract.md` §0.6.
+
+| Family | Features | What it represents |
+|---|---|---|
+| Sentinel-1 level | `s1_<pol>_pre`, `s1_<pol>_post` | Absolute backscatter on each date. Retained so a change value can be read relative to its starting point: a given decrease means something different over permanent water than over a vegetated slope. |
+| Sentinel-1 change | `s1_<pol>_change_db` | Log-ratio change in dB. Speckle is multiplicative, so a ratio makes it additive with approximately terrain-independent statistics, and the dB form is symmetric for reciprocal changes. |
+| Sentinel-1 polarimetric | `s1_vv_vh_ratio_db_pre`, `_post` | Co/cross-polarised ratio, which responds to scattering mechanism and separates dark-but-rough from dark-and-smooth surfaces. |
+| Sentinel-2 reflectance | `s2_<band>_pre`, `_post`, `_change` | Spectral state and per-band change. |
+| Sentinel-2 indices | NDWI, MNDWI, NDVI — pre, post and change | Water- and vegetation-sensitive indices. The **change** variants are what separate new inundation from permanent water: a river channel scores high on both dates and changes near zero. |
+| Terrain | `dem_elevation`, `dem_slope_degrees` | Hydrological plausibility and SAR-geometry error stratification. Radar shadow in steep terrain is a systematic false-positive mechanism for water detection. |
+
+Four properties are worth stating because they are where this kind of pipeline
+usually goes quietly wrong:
+
+- **Validity propagates and is never repaired.** A feature pixel is valid only
+  where every contributing input pixel is valid. No invalid input is replaced
+  by a plausible value, and no epsilon regularises a zero denominator —
+  flooring a zero backscatter at a small positive number would manufacture a
+  water-like value out of a non-observation. Masks are written per feature,
+  because a SAR change feature can be valid where an optical index is
+  cloud-masked.
+- **Band identity is by name, never by position.** Features bind logical
+  *roles* (`green`, `nir`, `vv`) to the band descriptions M2 actually wrote, so
+  an unverified band set fails by name instead of resolving to a guess.
+- **Backscatter representation is an explicit gate.** In dB the log-ratio *is*
+  the difference; in linear power it is `10·log10(post/pre)`. Applying a
+  logarithm to dB data produces a plausible-looking, physically meaningless
+  raster, so the representation must be declared.
+- **M3 never resamples.** Spatial normalisation belongs to M2, so a grid
+  disagreement is an explicit failure rather than a second interpolation.
+
+Normalisation is off: M3 emits physical quantities. When the segmentation
+milestone enables it, M3 will *apply* training-split statistics and never *fit*
+them — the only data M3 holds is the scene being processed, and fitting on it
+would be test-time leakage.
+
+**No production feature set has been generated.** The engine is tested against
+synthetic M2-compatible artifacts only, and a production run fails explicitly
+until the delivered band/polarisation bindings and target grid are supplied.
+
+### 5.2 Segmentation model (not implemented)
 
 The primary AI component is a flood/debris segmentation model trained
 using the permitted training datasets.
@@ -248,6 +305,7 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 ├── configs/                      # pipeline configuration (placeholders, many TODO)
 │   ├── data.yaml
 │   ├── preprocessing.yaml
+│   ├── features.yaml
 │   ├── segmentation.yaml
 │   └── evaluation.yaml
 ├── docs/
@@ -265,7 +323,7 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 │       ├── __init__.py
 │       ├── acquisition/          # CDSE provider, selection and manifests (M1)
 │       ├── preprocessing/         # validation, alignment and M2 artifacts
-│       ├── features/             (empty — namespace only)
+│       ├── features/             # feature registry, transforms and M3 artifacts
 │       ├── segmentation/         (empty — namespace only)
 │       ├── infrastructure/       (empty — namespace only)
 │       ├── network/              (empty — namespace only)
@@ -275,14 +333,15 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 │       └── utils/
 │           ├── provenance.py     # artifact provenance schema
 │           └── config.py         # YAML configuration loader
-├── tests/                        # M0 + M1 + M2 offline tests
+├── tests/                        # M0 + M1 + M2 + M3 offline tests
 │   ├── conftest.py
 │   ├── test_package_structure.py
 │   ├── test_configs.py
 │   ├── test_provenance.py
 │   ├── test_data_boundary.py     # enforces the AGENTS.md §3 data rule
 │   ├── test_acquisition_m1.py    # provider, selection and manifest tests
-│   └── test_preprocessing_m2.py  # tiny synthetic raster preprocessing tests
+│   ├── test_preprocessing_m2.py  # tiny synthetic raster preprocessing tests
+│   └── test_features_m3.py       # feature formulas, masking, registry, leakage
 ├── models/                       (empty; git-ignored)
 ├── artifacts/                    (empty; git-ignored)
 ├── notebooks/                    (empty)
@@ -338,7 +397,7 @@ warning minutes before a sudden glacier collapse.
 
 ## 14. Development status
 
-Current phase: **Milestone 2 complete — Earth Observation preprocessing.**
+Current phase: **Milestone 3 complete — Earth Observation feature generation.**
 
 ### What exists
 
@@ -354,6 +413,7 @@ Current phase: **Milestone 2 complete — Earth Observation preprocessing.**
 | `floodmap.utils.config` — configuration loader | **Done** |
 | Milestone 1 EO acquisition provider, selection and manifest | **Done** (offline; AOI/windows remain operator inputs) |
 | Milestone 2 raster validation, masking, alignment and artifacts | **Done** (synthetic fixtures; production inputs/grid remain unresolved) |
+| Milestone 3 feature registry, transforms, masking and artifacts | **Done** (synthetic fixtures; band/polarisation bindings remain unresolved) |
 | Test infrastructure incl. data-boundary guard | **Done** |
 
 ### What does NOT exist
@@ -361,8 +421,9 @@ Current phase: **Milestone 2 complete — Earth Observation preprocessing.**
 The following later stages are not implemented. Their corresponding
 `src/floodmap/` subpackages remain documented namespaces with no logic:
 
-- Feature construction
 - Flood/debris segmentation model (**no architecture selected** — `AGENTS.md` §5)
+- Training-corpus adapter onto the feature contract (boundary documented in
+  `docs/data-contract.md` §0.6.8; not implemented)
 - Infrastructure exposure analysis
 - Road-network graph and disruption analysis
 - Settlement connectivity analysis
@@ -396,6 +457,14 @@ search window, target grid CRS/resolution, DEM delivered grid and vertical
 datum, Sentinel-1 product type and polarisations, Sentinel-2 processing level
 and band set, and the reference hub definition.
 
+Milestone 3 adds no guesses to that list. Feature generation is defined over
+band *roles* rather than band names, so the unresolved polarisation and band
+sets propagate as explicit, named configuration failures rather than as
+defaults: `configs/features.yaml` leaves `polarisation_roles`,
+`spectral_band_roles`, `band_roles`, `backscatter_representation`,
+`terrain.elevation_unit` and `numerics.output_nodata` null, and a production
+run fails on them.
+
 Two scientific unknowns matter more than the rest, and neither is resolvable by
 reading the specification:
 
@@ -415,17 +484,19 @@ See `docs/dataset-registry.md` §5 for the full list.
     registry written; licenses still require verification)
 3.  Acquisition — **done (Milestone 1: metadata discovery and manifest)**
 4.  Preprocessing — **done (Milestone 2: analysis-ready raster boundary)**
-5.  Segmentation baseline — not started (**unblocked**: permitted datasets are
+5.  Feature generation — **done (Milestone 3: registry-driven feature
+    artifacts)**
+6.  Segmentation baseline — not started (**unblocked**: permitted datasets are
     now specified; label semantics still to confirm)
-6.  Unseen-Himalaya evaluation — blocked
-7.  Infrastructure impact — not started
-8.  Road-network connectivity — not started
-9.  Optional DEM flood-path analysis — not started
-10. Trishuli case study — not started
-11. Dashboard — not started
-12. Situation report — not started
-13. Final evaluation and limitations — not started
-14. Demo and submission packaging — not started
+7.  Unseen-Himalaya evaluation — blocked
+8.  Infrastructure impact — not started
+9.  Road-network connectivity — not started
+10. Optional DEM flood-path analysis — not started
+11. Trishuli case study — not started
+12. Dashboard — not started
+13. Situation report — not started
+14. Final evaluation and limitations — not started
+15. Demo and submission packaging — not started
 
 ## 15. Development setup
 
