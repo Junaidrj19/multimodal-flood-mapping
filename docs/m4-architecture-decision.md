@@ -219,7 +219,7 @@ roles, all deterministic:
 **Finding: supervised debris/sediment segmentation is not possible within the
 challenge rules.**
 
-- Kuro Siwo: `{0: No water, 1: Permanent Waters, 2: Floods, 3: Invalid}`
+- Kuro Siwo: `{0: No water, 1: Permanent Waters, 2: Floods}` (validity separate)
 - Sen1Floods11: `{-1: No Data, 0: Not Water, 1: Water}`
 
 Both lists are exhaustive; neither contains debris, sediment or mud. The
@@ -272,10 +272,10 @@ production feature generator. The audit fixes what that adapter must do.
 
 | Adapter obligation | Kuro Siwo | Sen1Floods11 |
 |---|---|---|
-| Declare SAR representation | `linear` (**confirm from a delivered raster** — currently inferred) | `decibel` (stated) |
+| Declare SAR representation | `linear` σ⁰ — **VERIFIED** by published statistics `mean[VV,VH]=[0.0953, 0.0264]`, clip at `0.15` | `decibel` (stated) |
 | Bind band roles | `vv`→VV, `vh`→VH | `vv`→band 0, `vh`→band 1 |
 | Reproject to a projected metre grid | from EPSG:3857 | from EPSG:4326 |
-| Emit per-band valid masks | from class `3` | from class `-1` |
+| Emit per-band valid masks | from the **separate** `valid_mask` raster (`0=invalid`) | from the **in-band** label value `-1` |
 | Temporal mapping | use **one** pre-image + post; **drop the second pre-image** | **no change features possible** |
 | Speckle filtering | already Lee Sigma 7×7 | **none applied** |
 | Label mapping | native 3-class | binary; separate head only |
@@ -295,6 +295,181 @@ production feature generator. The audit fixes what that adapter must do.
 
 ---
 
+## 7a. Canonical SAR representation — making training and inference the same thing
+
+The requirement is that these two paths produce features with identical
+semantics:
+
+```text
+Kuro Siwo  -> adapter -> M2/M3 -> M4 training
+Trishuli   ->            M2/M3 -> M4 inference
+```
+
+They can be made genuinely compatible, but not by the adapter alone. Seven
+properties must be pinned, and two of them cannot be fully reconciled and must
+instead be disclosed.
+
+### 7a.1 The canonical representation
+
+**Decided: decibels, at 10 m, on a projected metre CRS, 1 pre + 1 post.**
+
+| Property | Canonical value | Kuro Siwo | Trishuli (M2) |
+|---|---|---|---|
+| Backscatter scale | **dB** | linear σ⁰ → convert | `radiometric_calibration: linear_to_db` |
+| Polarisations | VV, VH (as bound roles) | VV, VH | TODO(verify) from product |
+| Resolution | **10 m true ground** | 10 units in EPSG:3857 — see §7a.3 | 10 m in a UTM zone |
+| CRS family | **projected, metre units** | EPSG:3857 → reproject | EPSG:326xx |
+| Temporal depth | **1 pre + 1 post** | 2 pre + 1 post → drop one | 1 pre + 1 post |
+| Speckle filter | **Lee Sigma 7×7** | already applied | **must be added to M2** |
+| Upper clip | **0.15 linear ≡ −8.24 dB** | applied | must be applied identically |
+
+**Why dB rather than linear**, given Kuro Siwo ships linear:
+
+1. The primary change feature is already decibel-valued in both branches. In dB
+   the log-ratio *is* the plain difference, so `s1_<pol>_change_db` needs no
+   special case.
+2. Linear σ⁰ is strongly right-skewed; dB is far closer to symmetric. Z-score
+   normalisation on linear values is dominated by the tail, which is why the
+   upstream pipeline needs a hard clip at 0.15 to be trainable at all.
+3. Sen1Floods11 is already dB, so choosing dB costs nothing on that branch and
+   avoids an unnecessary inverse transform.
+4. `linear_to_db` is already implemented in `floodmap.features.numerics` with
+   the correct strictly-positive domain guard, and M3's per-corpus
+   `backscatter_representation` gate already exists to route it.
+
+The conversion is monotone and lossless for strictly positive σ⁰. Zero and
+negative values are **invalid**, not floored — the existing guard handles that,
+and it matters because flooring would manufacture a water-like dark value.
+
+### 7a.2 The clip must move with the representation
+
+Kuro Siwo's published pipeline clips input backscatter at **0.15 linear**, then
+z-score normalises. If we train on that distribution we must reproduce the clip
+at inference, in the canonical representation:
+
+```text
+10 * log10(0.15) = -8.24 dB
+```
+
+An upper clip in linear power is an upper clip in dB, so the transform commutes
+and the bound is exact. Two consequences:
+
+- The clip is a **declared representation parameter**, not a feature-level
+  clamp. M3's `numerics.clip_to_valid_range` is deliberately off and requires a
+  written justification; matching a training distribution is a legitimate
+  justification, but it must be recorded as such with the −8.24 dB value and
+  applied to **both** paths or **neither**.
+- Clipping at −8.24 dB discards the bright tail. For flood detection that is
+  mostly harmless, because the signal of interest is *dark*. It does, however,
+  flatten the bright double-bounce response of flooded vegetation and urban
+  areas — exactly the cases the Kuro Siwo authors list as hard. Worth an
+  ablation rather than acceptance by default.
+
+### 7a.3 Flagged risk: EPSG:3857 pixel spacing is not true ground metres
+
+Kuro Siwo's terrain correction sets `pixelSpacingInMeter 10.0` with a target CRS
+of **EPSG:3857 (Web Mercator)**. Web Mercator's scale factor is `1/cos(lat)`, so
+a fixed 10-unit pixel covers *less* ground as latitude increases:
+
+| Latitude | `1/cos(lat)` | 10 projected units ≈ |
+|---|---|---|
+| 0° (equator) | 1.000 | 10.00 m ground |
+| 28.06° (our AOI) | 1.133 | **8.82 m ground** |
+| 45° | 1.414 | 7.07 m ground |
+| ~60° (their Sweden event) | 2.000 | **5.00 m ground** |
+
+If the spacing is nominal projected units, the corpus carries a **~2× variation
+in true ground sampling distance** between its tropical and northern events, and
+none of it is 10 m except at the equator. A model trained across that corpus has
+seen a mixture of effective resolutions, and our 10 m UTM inference grid matches
+none of them exactly.
+
+**This is a flagged risk, not an established fact.** It depends on whether SNAP
+interpreted that parameter as projected units or compensated for local scale.
+**REQUIRED before training:** read the transform and centre latitude from a
+delivered Kuro Siwo raster and compute the implied ground spacing. If the
+variation is real, the options are to resample the corpus to constant true
+ground spacing, to restrict training to a latitude band near the AOI, or to
+disclose it as an irreducible domain shift. Guessing which is unnecessary — one
+raster settles it.
+
+### 7a.4 Speckle filtering must be added to M2, or deliberately refused
+
+Kuro Siwo applies **Lee Sigma, 7×7 window, 3×3 target, sigma 0.9**.
+Sen1Floods11 applies none. Our M2 applies none.
+
+A CNN reads texture, and speckle is texture. Training on filtered imagery and
+serving unfiltered imagery is a silent domain shift of exactly the kind that
+produces good validation numbers and poor field performance. Three options, in
+order of preference:
+
+1. **Implement Lee Sigma in M2** with the same parameters, declared as an
+   explicit M2 operation and recorded in provenance. Matches the primary
+   corpus. Cost: a real new preprocessing step with its own correctness burden.
+2. **Filter neither** — strip the filter from the training path by using the
+   unfiltered SLC-derived product if one is available, or accept Sen1Floods11 as
+   the primary corpus instead. Cost: discards Kuro Siwo's label quality and its
+   permanent-water class.
+3. **Disclose the mismatch** and quantify it with an ablation. Cost: a known
+   uncorrected domain shift.
+
+Option 1 is recommended. Option 3 is acceptable only if the ablation is actually
+run and reported.
+
+### 7a.5 Temporal depth: parity over richness
+
+Kuro Siwo offers two pre-event images; M1 selects one. The baseline uses
+**1 pre + 1 post** on both paths, because train/serve parity is worth more than
+the extra pre-image:
+
+- A 2-pre model would require M1 to find *two* same-relative-orbit pre-event
+  acquisitions, roughly doubling the availability constraint that
+  `on_no_same_track_pair: fail` already enforces. For an arbitrary
+  judge-selected date that is a materially higher chance of outright failure.
+- The adapter therefore **drops** Kuro Siwo's second pre-image rather than
+  synthesising a counterpart at inference. Dropping real data is the honest
+  direction; fabricating a second pre-image would not be.
+- A 2-pre variant remains available as a **declared experiment** with its own
+  stricter M1 requirement, reported separately.
+
+### 7a.6 What cannot be reconciled
+
+Two residual mismatches have no clean fix and must be disclosed rather than
+engineered away:
+
+| Mismatch | Why it cannot be fixed | Disclosure |
+|---|---|---|
+| **Terrain-correction DEM** | Kuro Siwo used SRTM 1Sec; we use Copernicus WorldDEM-30. Re-correcting their imagery would mean reprocessing the corpus from L1, which is outside scope and would void their labels' geolocation. | Residual geolocation differences of up to a pixel in steep terrain, concentrated exactly where our AOI is steepest. |
+| **Label semantics** | The `Floods` / `Permanent Waters` boundary rests on unpublished photointerpretation keys (§9.2). | Our class semantics inherit a judgement we cannot reconstruct. |
+
+### 7a.7 The compatibility contract, as a checklist
+
+M4 may begin training only once all of these are true and recorded:
+
+1. Canonical representation is **dB**, declared per corpus in
+   `configs/features.yaml → sentinel1.backscatter_representation`.
+2. Both paths resolve the same M3 feature registry with the same
+   `feature_set_version`.
+3. The 0.15 linear / −8.24 dB clip is applied to **both** paths or neither, with
+   justification recorded.
+4. Speckle filtering is identical on both paths, or the mismatch is disclosed
+   and ablated.
+5. Kuro Siwo's true ground spacing has been measured from a delivered raster
+   (§7a.3) and either matched or disclosed.
+6. Both paths are on a projected metre CRS at the same ground spacing.
+7. Temporal depth is 1 pre + 1 post on both paths.
+8. The adapter has verified a delivered Kuro Siwo raster against the published
+   statistics `mean[VV,VH] = [0.0953, 0.0264]`, `std = [0.0427, 0.0215]` before
+   any conversion. A distribution that does not match means the product is not
+   what this contract assumes.
+
+> **The honest summary.** Items 1–3 and 6–8 are mechanical and the existing M3
+> gate already supports them. Item 4 needs real work in M2. Item 5 needs one
+> measurement. The two entries in §7a.6 are permanent, and they bound how well
+> any reported number can be expected to transfer.
+
+---
+
 ## 8. Exact M4 requirements
 
 What M4 must do, derived from the above. **M4 is not started.**
@@ -307,7 +482,9 @@ What M4 must do, derived from the above. **M4 is not started.**
    consuming M3 Sentinel-1 features via the registry.
 3. Honour upstream splits; exclude Kuro Siwo's test activations from training
    and validation.
-4. Exclude ignore values (`3`, `-1`) from loss and all metrics.
+4. Exclude invalid pixels from loss and all metrics, reading invalidity from
+   Kuro Siwo's **separate** `valid_mask` raster and from Sen1Floods11's
+   **in-band** `-1`. The two forms are not interchangeable.
 5. Keep the decision threshold outside the model, selected on validation.
 6. Emit a `segmentation_prediction` artifact with `ArtifactProvenance` tracing
    to the M3 feature set, its registry, and onward to the M1 manifest.
@@ -333,14 +510,32 @@ evidence tiering, infrastructure exposure, connectivity, hydrology bonus.
 
 Carried from `docs/dataset-registry.md` §5.2. The two that most affect M4:
 
-1. **Kuro Siwo's SAR representation is inferred, not stated.** Linear σ⁰ comes
-   from reading its SNAP graph (`outputImageScaleInDb=false`, no
-   `LinearToFromdB` node). A wrong inference silently corrupts every SAR
-   feature. **Must be confirmed from a delivered raster's value distribution
-   before training.**
-2. **Kuro Siwo's flood definition is in an unread Supplemental Material.** Our
-   `Floods` class semantics inherit theirs, so the label mapping cannot be
-   frozen until it is read.
+1. **RESOLVED — Kuro Siwo is linear σ⁰.** Four independent lines of evidence:
+   the SNAP graph (`outputImageScaleInDb=false`, no `LinearToFromdB`); published
+   statistics `data_mean[VV,VH] = [0.0953, 0.0264]` and
+   `data_std = [0.0427, 0.0215]`, which are linear-power magnitudes rather than
+   decibels; the Supplemental Material's *"clipped at a max value of 0.15 and
+   normalized to 0 mean and 1 standard deviation"* together with a loader clamp
+   of `min=0.0` that would delete dB data; and a default `scale_input` of plain
+   z-score `normalize`, with the optional path applying `torch.log` **to** the
+   stored values. The published statistics are the adapter's cross-check on a
+   delivered raster.
+2. **PARTIALLY RESOLVED — the flood definition is unpublished, not merely
+   unread.** The Supplemental Material §4 was located and read. It documents the
+   *process* — three categories, extracted photointerpretation keys, 1:1000
+   annotation scale, five SAR experts with cross-checking under a senior
+   scientist — but it does **not publish the keys**, so the operational
+   `Floods`-vs-`Permanent Waters` boundary is an undocumented expert judgement.
+   Also established: **no external water layer** (JRC/Pekel or similar) was used
+   to define "permanent"; the authors raise that only as future work and warn a
+   static layer *"could potentially impute noise"*. Whether `Floods` includes wet
+   soil or partially submerged vegetation is **unstated**, and sediment-laden or
+   muddy water is **never mentioned**. No inter-annotator agreement or label-noise
+   figure is reported; the published 51% / 48% IoU figures are agreement with
+   CEMS, which the authors treat as the weaker product.
+
+   This is now a **permanent limitation to disclose**, not a task to complete:
+   our `Floods` semantics inherit a judgement we cannot fully reconstruct.
 
 Plus: both licences unresolved; Sen1Floods11 weak-label encodings and test split
 unknown; no Himalayan labelled data in the permitted set; the Kuro Siwo "Nepal"

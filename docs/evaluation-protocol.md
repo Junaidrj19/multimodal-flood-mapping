@@ -135,10 +135,20 @@ Sen1Floods11 {Water} --> {Permanent Waters, Floods}            NOT POSSIBLE
    (`docs/scientific-assumptions.md` §7).
 4. `configs/segmentation.yaml → classes.label_mapping` records the mapping
    **per source dataset**, never as a single global map.
-5. Sen1Floods11's `-1` and Kuro Siwo's `3` are both ignore values and must be
-   excluded from loss and from every metric — not mapped to a negative class.
-   Treating "no data" as "not water" would make unobserved pixels count as
-   correct negatives and inflate every score.
+5. **Invalid pixels must be excluded from loss and from every metric** — never
+   mapped to a negative class. Treating "no data" as "not water" would make
+   unobserved pixels count as correct negatives and inflate every score.
+
+   The two corpora express invalidity **differently**, and the adapter must not
+   assume one form:
+
+   | Corpus | Where invalidity lives |
+   |---|---|
+   | Kuro Siwo | a **separate** `valid_mask` raster (`0=invalid, 1=valid`); the label mask carries only `{0,1,2}` |
+   | Sen1Floods11 | **in-band** as label value `-1` (`No Data / Not Valid`) |
+
+   An adapter that filtered a label value for Kuro Siwo would match nothing and
+   silently train on invalid pixels.
 
 ### 2.6 There is no labelled Himalayan test set in the permitted data
 

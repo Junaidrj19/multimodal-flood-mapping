@@ -233,17 +233,56 @@ production:
         resolution_m: 10
         tile_size_px: 224
         crs: "EPSG:3857"
-        # Inferred from configs/grd_preprocessing.xml: Calibration has
-        # outputImageScaleInDb=false and the graph contains no LinearToFromdB
-        # node. The papers do not state it in words, so this stays an inference.
+        # VERIFIED from four independent lines of evidence. No sentence in the
+        # paper states the scale in words, but the numeric evidence is decisive:
+        #   1. configs/grd_preprocessing.xml: Calibration sets
+        #      outputImageScaleInDb=false, outputSigmaBand=true, and the graph
+        #      contains no LinearToFromdB node.
+        #   2. configs/train/data_config.json publishes per-channel statistics
+        #      data_mean [VV, VH] = [0.0953, 0.0264] and
+        #      data_std  [VV, VH] = [0.0427, 0.0215].
+        #      Decibel VV backscatter would sit near -10 to -15, not +0.095.
+        #   3. Supplemental Material §5: "All SAR images were clipped at a max
+        #      value of 0.15 and normalized to 0 mean and 1 standard deviation."
+        #      A 0.15 ceiling is meaningful for linear power and nonsensical for
+        #      dB. The loader clamps with min=0.0, which would delete dB data.
+        #   4. The default scale_input is "normalize" (plain z-score); the
+        #      optional "custom" path applies torch.log TO the stored values,
+        #      which is only coherent if they are linear.
         backscatter_representation: "linear"
-        backscatter_representation_status: "INFERRED(repo graph) — not stated in prose"
+        backscatter_representation_status: "VERIFIED(numeric evidence; not stated in prose)"
+        published_channel_statistics:
+          note: >-
+            Published by the authors for linear sigma-nought, clipped at 0.15.
+            Recorded for adapter cross-checking: a delivered raster whose
+            distribution does not match these is not what we think it is.
+          data_mean: {vv: 0.0953, vh: 0.0264}
+          data_std: {vv: 0.0427, vh: 0.0215}
+          clamp_max: 0.15
+          default_scaling: "normalize (z-score), no log transform"
         temporal_structure: "triplet: 2 pre-event + 1 post-event"
+        # CORRECTION (verified in the repository): the stored label mask carries
+        # ONLY {0, 1, 2}. Validity is a SEPARATE binary raster, not a label
+        # value. An earlier revision of this file recorded "3: Invalid pixels"
+        # as if 3 were a stored class with ignore_index semantics. That was
+        # wrong, and it mattered: an adapter built on it would have filtered
+        # label==3 (finding nothing) and silently trained on invalid pixels.
+        #   - HuggingFace Kuro-Siwo-Webdataset card:
+        #       mask.npy       -> "0: no water, 1: permanent water, 2: flood"
+        #       valid_mask.npy -> "0: invalid, 1: valid"
+        #   - dataset/Dataset.py loads valid_mask as its own raster, carries it
+        #     separately through augmentation, and applies `valid_mask == 1`.
+        #   - CLASS_LABELS in training/segmentation_trainer.py does contain a
+        #     `3: "Invalid pixels"` entry, but CLASS_LABELS[3] is NEVER
+        #     referenced anywhere in the codebase; only [0], [1], [2] are used.
+        #   - No `ignore_index` key exists in any config file in the repository.
         label_classes:
           0: "No water"
           1: "Permanent Waters"
           2: "Floods"
-          3: "Invalid pixels"     # ignore_index; num_classes=3
+        label_values_are_exhaustive: true
+        validity_representation: "separate_binary_raster"   # NOT a label value
+        validity_semantics: "valid_mask.npy: 0=invalid, 1=valid"
         separates_permanent_from_flood_water: true
         has_debris_or_sediment_class: false
         # DISCLOSURE ONLY — not a data path, not a loader, not an input.
@@ -255,10 +294,15 @@ production:
         # docs/dataset-registry.md §1.5.4 and docs/evaluation-protocol.md §7.3.
         upstream_label_provenance: >-
           Manual photointerpretation of the preprocessed GRD images by five SAR
-          experts, initialised from Copernicus EMS shapefiles where available.
+          experts at an annotation scale of 1:1000, initialised from Copernicus
+          EMS shapefiles where available. Each expert annotated one of five
+          partitions and quality-checked another's, supervised by a senior
+          remote-sensing scientist, with group meetings to resolve discrepancies.
           The upstream authors note that errors in those annotations are
-          apparent. No EMS product is retrieved, read or referenced by this
-          pipeline; only the authors' finished labels are consumed.
+          apparent, and report agreement with CEMS of only 51% IoU for permanent
+          water and 48% IoU for flood. No EMS product is retrieved, read or
+          referenced by this pipeline; only the authors' finished labels are
+          consumed.
         split_type: "event_and_geography_based"
         official_split_activation_ids:
           test: [321, 561, 445, 562, 411, 1111002, 277, 1111007, 205, 1111013]
@@ -270,8 +314,53 @@ production:
         # than Himalayan; treat it as NOT satisfying our unseen-Himalaya
         # requirement until the AOI geometry is inspected.
         upstream_test_activations_are_offlimits: true
-        flood_definition: null     # TODO(verify) — paper Supplemental Material
-        stated_label_noise: null   # TODO(verify) — paper Supplemental Material
+        # VERIFIED by reading the repository: the three lists are pairwise
+        # disjoint and together cover 44 activation ids, all of which appear in
+        # catalogue/catalogue.yaml. Two bookkeeping discrepancies, recorded
+        # rather than smoothed over:
+        #   - the catalogue holds 45 activation ids, so exactly one
+        #     (1111012, Australia / Singleton) belongs to NO split and must not
+        #     be used without an explicit decision;
+        #   - the paper says "43 flood events" while the catalogue lists 45 ids,
+        #     so "activation" and "event" are not one-to-one. Any per-event
+        #     count we publish must say which of the two it means.
+        split_verification:
+          train_count: 27
+          val_count: 7
+          test_count: 10
+          union_count: 44
+          pairwise_disjoint: true
+          all_split_ids_present_in_catalogue: true
+          catalogue_activation_id_count: 45
+          activations_in_no_split: [1111012]
+          paper_stated_event_count: 43
+        # Supplemental Material §4 WAS located and read. It describes the
+        # annotation PROCESS but does not publish the decision RULES: it states
+        # that photointerpretation keys were extracted, without listing them.
+        # So the operational Floods-vs-Permanent-Waters boundary remains
+        # unpublished and our Floods class semantics inherit an undocumented
+        # judgement. Treat this as a permanent limitation, not a pending task.
+        flood_definition: "UNPUBLISHED — process documented, decision keys not released"
+        flood_definition_known:
+          permanent_water_reference: >-
+            NONE. No external water layer (JRC/Pekel or similar) was used. The
+            authors discuss adding a permanent-water layer as FUTURE work and
+            warn a static layer "could potentially impute noise". The
+            distinction was made by expert photointerpretation of the SAR time
+            series alone, which is why it is reproducible only in spirit.
+          includes_wet_soil_or_submerged_vegetation: "UNSTATED"
+          sediment_laden_or_muddy_water: "NOT MENTIONED ANYWHERE"
+          artifact_flagging_criteria: "referenced but not published"
+        # No quantitative inter-annotator agreement (e.g. Cohen's kappa) and no
+        # label-noise estimate are reported. The 51%/48% IoU figures are
+        # agreement with CEMS, which the authors treat as the lower-quality
+        # product — not an agreement measure among their own annotators.
+        stated_label_noise: "NONE REPORTED (no kappa, no noise estimate)"
+        # Per-event imaging geometry is held constant by the authors:
+        # "all three SAR images belong to either the descending or ascending
+        # imaging geometry to prevent variations in layover, foreshortening and
+        # shadow effects". This matches our own same-relative-orbit rule.
+        imaging_geometry_constraint: "single pass direction per event"
         path: null                 # TODO: populate when actually acquired
       - id: "sen1floods11"
         name: "Sen1Floods11"

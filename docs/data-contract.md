@@ -783,15 +783,30 @@ dependency set is pinned.
 
 ### 5.2 Label taxonomies — VERIFIED(source)
 
-**Kuro Siwo** (`training/segmentation_trainer.py`; `num_classes: 3`,
-`ignore_index: 3`):
+**Kuro Siwo** — stored label mask, with validity held **separately**:
 
 ```text
-0 = No water
-1 = Permanent Waters
-2 = Floods
-3 = Invalid pixels   (ignored)
+mask.npy        0 = No water
+                1 = Permanent Waters
+                2 = Floods          (exhaustive — there is no fourth value)
+
+valid_mask.npy  0 = invalid
+                1 = valid           (a SEPARATE raster, not a label value)
 ```
+
+> **Correction.** An earlier revision of this contract recorded
+> `3 = Invalid pixels (ignored)` as a stored class with `ignore_index`
+> semantics. That was wrong. The label mask carries only `{0, 1, 2}`; validity
+> is a separate binary raster that the upstream loader reads independently and
+> applies as `valid_mask == 1`. The `3: "Invalid pixels"` entry does exist in
+> the upstream `CLASS_LABELS` dict, but `CLASS_LABELS[3]` is **never referenced
+> anywhere in that codebase**, and no `ignore_index` key exists in any of its
+> configs.
+>
+> The error mattered rather than being cosmetic: an adapter written against it
+> would have filtered `label == 3`, matched nothing, and then trained on
+> invalid pixels while appearing to handle them. **REQUIRED:** the adapter reads
+> two rasters per sample and derives the loss/metric mask from `valid_mask`.
 
 **Sen1Floods11** (hand-labelled QC layer, README):
 

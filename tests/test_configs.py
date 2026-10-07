@@ -369,7 +369,6 @@ class TestAuditedTrainingDatasetFacts:
         assert kuro[0] == "No water"
         assert kuro[1] == "Permanent Waters"
         assert kuro[2] == "Floods"
-        assert kuro[3] == "Invalid pixels"
         sen1 = self._datasets()["sen1floods11"]["label_classes"]
         assert sen1[-1] == "No Data / Not Valid"
         assert sen1[0] == "Not Water"
@@ -386,10 +385,65 @@ class TestAuditedTrainingDatasetFacts:
         assert datasets["kuro_siwo"]["backscatter_representation"] == "linear"
         assert datasets["sen1floods11"]["backscatter_representation"] == "decibel"
 
-    def test_kuro_siwo_representation_is_marked_as_inferred(self):
-        """It was read from a SNAP graph, not stated in prose. Do not promote it."""
-        status = self._datasets()["kuro_siwo"]["backscatter_representation_status"]
-        assert status.startswith("INFERRED")
+    def test_kuro_siwo_representation_is_verified_by_numeric_evidence(self):
+        """Resolved from four independent lines of evidence.
+
+        No sentence in the paper states the scale, so the status string must
+        keep saying that even though the conclusion is now firm. The published
+        channel statistics are pinned because they are the adapter's
+        cross-check: a delivered raster whose distribution does not match them
+        is not the product we think it is.
+        """
+        kuro = self._datasets()["kuro_siwo"]
+        status = kuro["backscatter_representation_status"]
+        assert status.startswith("VERIFIED")
+        assert "not stated in prose" in status
+        stats = kuro["published_channel_statistics"]
+        assert stats["data_mean"] == {"vv": 0.0953, "vh": 0.0264}
+        assert stats["data_std"] == {"vv": 0.0427, "vh": 0.0215}
+        assert stats["clamp_max"] == 0.15
+        # A linear-power mean is order 0.1; a decibel mean would be order -10.
+        assert 0.0 < stats["data_mean"]["vv"] < 1.0
+
+    def test_kuro_siwo_validity_is_a_separate_raster_not_a_label_value(self):
+        """Regression guard for a real error this repository made and fixed.
+
+        An earlier revision recorded "3: Invalid pixels" as a stored class with
+        ignore_index semantics. It is not: the mask carries {0,1,2} and validity
+        is a separate binary raster. An adapter built on the wrong reading would
+        filter label==3, match nothing, and silently train on invalid pixels.
+        """
+        kuro = self._datasets()["kuro_siwo"]
+        assert set(kuro["label_classes"]) == {0, 1, 2}
+        assert 3 not in kuro["label_classes"]
+        assert kuro["label_values_are_exhaustive"] is True
+        assert kuro["validity_representation"] == "separate_binary_raster"
+        assert "0=invalid" in kuro["validity_semantics"]
+
+    def test_kuro_siwo_flood_definition_is_recorded_as_unpublished(self):
+        """The process is documented; the decision rules are not released.
+
+        Pinned so a later reader does not mistake "we read the supplement" for
+        "the class boundary is defined". Our Floods semantics inherit an
+        undocumented expert judgement, and no external water reference was used.
+        """
+        kuro = self._datasets()["kuro_siwo"]
+        assert kuro["flood_definition"].startswith("UNPUBLISHED")
+        known = kuro["flood_definition_known"]
+        assert "NONE" in known["permanent_water_reference"]
+        assert known["includes_wet_soil_or_submerged_vegetation"] == "UNSTATED"
+        assert "NOT MENTIONED" in known["sediment_laden_or_muddy_water"]
+        assert "NONE REPORTED" in kuro["stated_label_noise"]
+
+    def test_kuro_siwo_split_verification_is_recorded(self):
+        """Splits were checked, not trusted: disjointness and coverage."""
+        v = self._datasets()["kuro_siwo"]["split_verification"]
+        assert v["pairwise_disjoint"] is True
+        assert v["all_split_ids_present_in_catalogue"] is True
+        assert v["train_count"] + v["val_count"] + v["test_count"] == v["union_count"]
+        # One catalogue activation belongs to no split and must not be used blind.
+        assert v["activations_in_no_split"] == [1111012]
+        assert v["union_count"] < v["catalogue_activation_id_count"]
 
     def test_only_sen1floods11_provides_optical_data(self):
         """Why the required corpus cannot supervise optical channels."""

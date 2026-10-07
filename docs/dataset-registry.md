@@ -177,7 +177,23 @@ From `training/segmentation_trainer.py`, with the paper's own wording:
 | 0 | `No water` |
 | 1 | `Permanent Waters` |
 | 2 | `Floods` |
-| 3 | `Invalid pixels` — `ignore_index`; `num_classes: 3` |
+
+**Validity is a separate raster, not a label value.** The HuggingFace
+`Kuro-Siwo-Webdataset` card documents two arrays per sample:
+`mask.npy` → *"0: no water, 1: permanent water, 2: flood"*, and
+`valid_mask.npy` → *"0: invalid, 1: valid"*. `dataset/Dataset.py` loads the
+validity raster independently, carries it separately through augmentation, and
+applies `valid_mask == 1`.
+
+> **Correction to an earlier revision of this registry.** This table previously
+> listed `3: Invalid pixels` as a stored class with `ignore_index` semantics.
+> It is not a stored value. `CLASS_LABELS` in
+> `training/segmentation_trainer.py` does contain a `3` entry, but
+> `CLASS_LABELS[3]` is never referenced in that repository — only `[0]`, `[1]`
+> and `[2]` are — and no `ignore_index` key appears in any of its config files.
+> The consequence for us is concrete: the adapter must read **two** rasters per
+> sample. Pinned by
+> `tests/test_configs.py::test_kuro_siwo_validity_is_a_separate_raster_not_a_label_value`.
 
 Paper wording: *"assigning each pixel to one of three categories, i.e. Permanent
 Waters, Floods and No Water."*
@@ -443,7 +459,7 @@ carried. The specification's "CC BY 4.0" is recorded as a *claim*, not a fact.
 **Neither permitted dataset contains a debris, sediment or mud class.** This is
 now verified from both corpora's own class definitions rather than assumed:
 
-- Kuro Siwo: `{0: No water, 1: Permanent Waters, 2: Floods, 3: Invalid pixels}`
+- Kuro Siwo: `{0: No water, 1: Permanent Waters, 2: Floods}`, validity separate
 - Sen1Floods11: `{-1: No Data, 0: Not Water, 1: Water}`
 
 Both class lists are exhaustive. The permitted training list is **closed**
@@ -455,6 +471,79 @@ supported by the training labels"* — and the training labels support flood
 water only. The product claim narrows accordingly. The decision and the
 permitted alternatives are recorded in `docs/m4-architecture-decision.md` §6 and
 `docs/scientific-assumptions.md` §9.
+
+### 1.6 Unverified candidate AOI artifact — `aoi.geojson`
+
+An untracked file `aoi.geojson` appeared in the working tree. It is **not
+adopted, not committed, and not referenced by any configuration.**
+`configs/data.yaml → aoi` remains `null`.
+
+It is recorded here because a plausible-looking AOI with no provenance is a
+governance hazard: every acquisition, every grid and every reported number
+downstream would inherit it, so adopting it silently would be the single
+highest-leverage unverified assumption in the project.
+
+**What was measured (independently verifiable, repeatable):**
+
+| Property | Value |
+|---|---|
+| sha256 | `9035eeee025f311be7f16af1d23737a46caee20eb0b2a8dfa144d111b9362610` |
+| size | 79,228 bytes |
+| created = modified | 2026-10-05 19:46:31 (identical mtime/ctime → written once, not edited) |
+| git history | **none** — untracked, never committed |
+| FeatureCollection name | `NPL-FL-2026-upperstream-aoi` |
+| feature name | `Upper Trishuli and Bhote Koshi flood corridor` |
+| geometry | single `Polygon`, 1,515 vertices, closed ring |
+| bbox (EPSG:4326) | lon 85.05814 – 85.38789, lat 27.84397 – 28.28743 |
+| declared `source_crs` | `EPSG:32645` (UTM 45N) |
+| declared `buffer_meters` | 1000 |
+| declared `area_sq_km` | 132.93 |
+| **recomputed area in EPSG:32645** | **132.93 km² — agrees to 0.001%** |
+| perimeter | 133.5 km |
+| implied centreline length at 2 km width | 66.5 km |
+| half-perimeter (thin-corridor proxy) | 66.8 km — agrees to 0.4% |
+| admin attributes | Bagmati province; Nuwakot and Rasuwa districts; 8 named municipalities |
+
+**What this establishes.** The file is **internally consistent and machine
+generated**. The recomputed area matches the stored attribute to five
+significant figures, and the implied corridor length from area-over-width agrees
+with half the perimeter to 0.4% — the signature of a genuine buffer around a
+~66–67 km linear feature, not a hand-drawn or synthetic polygon. The declared
+UTM zone is correct for the longitude range, and the named districts and
+municipalities are consistent with the Bhote Koshi–Trishuli corridor.
+
+The top-level `name` member plus a `crs` member containing
+`urn:ogc:def:crs:OGC:1.3:CRS84` is the **GDAL/`ogr2ogr` fingerprint**: RFC 7946
+does not define `name` and explicitly forbids `crs`, and GDAL emits both in its
+non-RFC GeoJSON output. Combined with the single-space indentation and
+one-coordinate-per-line layout, the file was almost certainly produced by
+`ogr2ogr` converting a shapefile or GeoPackage named
+`NPL-FL-2026-upperstream-aoi`.
+
+**What this does NOT establish — the gaps that matter:**
+
+1. **Who produced it, and from what.** No author, no tool version, no
+   generation date inside the file. The river centreline it was buffered from is
+   unidentified; if that centreline came from OSM, its snapshot date matters
+   under `AGENTS.md` §3 and is unrecorded.
+2. **Whether it is the judge-selected AOI.** Nothing connects it to the official
+   Track B specification. The name `NPL-FL-2026-upperstream-aoi` is suggestive
+   but self-asserted.
+3. **Whether 1 km is the right buffer.** It is a scientific choice that bounds
+   everything downstream, and it arrived without justification or sensitivity
+   analysis.
+4. **Whether "upperstream" is the intended extent.** The 132.93 km² corridor
+   covers roughly 66 km of valley. Whether that is the correct study extent for
+   the event is a decision, not a measurement.
+
+**Status: `UNVERIFIED (provenance unknown)` · NOT ADOPTED.**
+
+**Required before use:** confirm the origin and the centreline source with
+whoever produced it; record the centreline's own provenance and, if OSM-derived,
+its snapshot date; justify the 1 km buffer and plan its sensitivity analysis;
+and only then populate `configs/data.yaml → aoi` with the file committed and
+hash-pinned. Until then it is a candidate, and M1 continues to require an
+explicit operator-supplied AOI.
 
 ---
 
@@ -568,7 +657,7 @@ kept with their outcome so a later reader can see what was settled and how.
 
 | # | Question | Outcome |
 |---|---|---|
-| 1 | Kuro Siwo label semantics — debris separate from water? | **RESOLVED — NO.** Classes are `{0: No water, 1: Permanent Waters, 2: Floods, 3: Invalid}`. No debris class. Kuro Siwo *does* separate permanent water from flood water, which is valuable (§1.5.1). |
+| 1 | Kuro Siwo label semantics — debris separate from water? | **RESOLVED — NO.** Classes are `{0: No water, 1: Permanent Waters, 2: Floods}` with validity in a separate raster. No debris class. Kuro Siwo *does* separate permanent water from flood water, which is valuable (§1.5.1). |
 | 2 | Sen1Floods11 label semantics | **RESOLVED.** Binary `{-1: No Data, 0: Not Water, 1: Water}`. Does **not** separate permanent from flood water. |
 | 3 | Do the two corpora share label semantics? | **RESOLVED — NO.** 3-class vs binary. Harmonisation rule required and specified in `docs/evaluation-protocol.md` §2.5. |
 | 4 | Official dataset splits | **RESOLVED.** Both are event/geography based, not random. Kuro Siwo's activation IDs are recorded in `configs/data.yaml`; Sen1Floods11's are per-event in its metadata. Honouring them is now a rule (`docs/evaluation-protocol.md` §2.4). |
