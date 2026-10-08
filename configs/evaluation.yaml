@@ -16,24 +16,54 @@ version: 0.1.0
 # -----------------------------------------------------------------------------
 # Splits
 #
-# UNKNOWN (blocking) until the permitted training datasets are enumerated.
 # Splitting must be spatial/scene-level, not random pixel or random tile:
 # neighbouring pixels and overlapping tiles are strongly correlated, so a random
 # split leaks information across splits and inflates scores.
+#
+# THREE ROLES, FROZEN (C6, 2026-10-08). The scene lists stay empty because they
+# are populated from the official Kuro Siwo activation split at run time, not
+# transcribed here where they could drift from the upstream table.
+#   training            fitting happens here, and nowhere else
+#   validation          selection happens here, and nowhere else
+#   external_validation reported, never selected on
+#   unseen_himalaya_test final reporting only, used once
 # -----------------------------------------------------------------------------
 splits:
   strategy: "scene_level_spatial"   # scene_level_spatial | geographic_block
   # Explicitly NOT permitted: random pixel/tile splits across one scene.
   forbid_random_pixel_split: true
+  # The unit the official Kuro Siwo split is defined on. Whole activations are
+  # assigned to one split, which is what makes C7's zero buffer defensible.
+  partition_unit: "activation_id"
+  official_split_is_authoritative: true
   train:
     datasets: []
     scenes: []
+    purpose: >-
+      Model fitting and normalisation-statistics fitting happen here and ONLY
+      here.
   validation:
     datasets: []
     scenes: []
     purpose: >-
       Model selection, hyperparameter choice, early stopping and decision
       threshold selection happen here and ONLY here.
+  # Sen1Floods11. A second corpus, not a second split of the first: different
+  # SAR representation, no pre-event imagery, binary labels. It measures
+  # transfer, so it is reported and never tuned against — and it could not be
+  # tuned against on the frozen criterion anyway, because a binary corpus
+  # cannot score the flood-vs-permanent-water distinction that criterion uses.
+  external_validation:
+    datasets: []
+    scenes: []
+    purpose: >-
+      Independent transfer measurement on a second corpus. Final reporting
+      only.
+    may_be_used_for_tuning: false
+    may_be_used_for_threshold_selection: false
+    may_be_used_for_checkpoint_selection: false
+    label_scheme: "binary"
+    scores_flood_vs_permanent_water: false
   # The headline generalisation test.
   unseen_himalaya_test:
     datasets: []
@@ -47,14 +77,36 @@ splits:
 
 # -----------------------------------------------------------------------------
 # Leakage prevention
+#
+# C7 FROZEN 2026-10-08: no additional spatial buffer is required, and 0 is a
+# decision rather than an unset value.
+#
+# The reasoning, because a zero here would otherwise look like an omission:
+# the official Kuro Siwo split assigns WHOLE ACTIVATIONS, so every tile of an
+# activation lands in exactly one split and there is no train/validation tile
+# adjacency anywhere in the corpus for a buffer to separate. A non-zero
+# distance would be a number with nothing to act on, and would imply a
+# tile-level split this project does not use.
+#
+# The gap that remains is disclosed rather than closed: activation-level
+# splitting isolates EVENTS, not GEOGRAPHY. Two activations over the same basin
+# at different dates could sit in different splits and would share terrain,
+# land cover and permanent water. Verifying that needs all 45 activation
+# geometries; 5 are available locally.
 # -----------------------------------------------------------------------------
 leakage_controls:
   # Fail loudly if the same scene identifier appears in more than one split.
   assert_disjoint_scene_ids: true
-  # Geographically adjacent tiles across splits still leak. A buffer between
-  # split regions is the mitigation; the distance must be chosen with the data.
+  assert_disjoint_activation_ids: true
   assert_spatial_disjoint: true
-  spatial_buffer_m: null        # TODO: set when scene geometry is known
+  spatial_buffer_m: 0
+  spatial_buffer_is_a_decision_not_an_unset_value: true
+  spatial_isolation_mechanism: "activation_level_partition"
+  # A tile-level or pixel-level split inside one activation WOULD create
+  # cross-split adjacency, at which point a justified buffer distance becomes
+  # mandatory. Prohibited rather than left to judgement.
+  forbid_sub_activation_split: true
+  assert_activation_geometry_disjointness: "PENDING(data)"
   # Normalisation statistics must come from the training split only.
   assert_normalisation_from_train_only: true
   # Validation-only references must never influence the prediction path.
@@ -83,12 +135,51 @@ metrics:
 
 # -----------------------------------------------------------------------------
 # Decision threshold selection
+#
+# C6 FROZEN 2026-10-08. The CRITERION is decided; the VALUE is not available.
+#
+# PRIMARY CRITERION: IoU of the flood class (Kuro Siwo class 2).
+#
+# Why not macro-IoU over {No water, Permanent Waters, Floods}: two of those
+# three classes are easy. "No water" dominates by area and "Permanent Waters"
+# is a largely static, high-contrast target. A macro average over them can rise
+# while flood IoU falls, which would select a checkpoint that is worse at the
+# only thing this product claims to do. Every other metric below is still
+# REPORTED — per-class IoU and F1, macro and micro, the full confusion matrix.
+# They are simply not what selection optimises.
+#
+# WHY THE VALUE IS STILL BLOCKED. Only one validation activation (19 tiles) is
+# present locally. One activation cannot separate event-specific behaviour from
+# generalisable behaviour, so a threshold tuned on it is a property of that
+# event rather than of the model. Recorded as blocked rather than quietly
+# accepted: the alternative — selecting on 19 tiles and reporting the number as
+# if it came from the official 7-activation validation split — would be the
+# actual scientific error here.
 # -----------------------------------------------------------------------------
 threshold_selection:
   # Procedure is defined; the resulting value is not pre-set.
-  search_space: null            # TODO: e.g. a sweep over [0, 1]
-  selection_split: "validation" # never unseen_himalaya_test
-  selection_criterion: null     # TODO: state the criterion before running the sweep
+  search_space: null            # TODO: sweep bounds, set with the first baseline
+  selection_split: "validation" # never unseen_himalaya_test, never external_validation
+  selection_criterion: "iou_flood_class"
+  selection_criterion_class_id: 2
+  selection_criterion_class_name: "Floods"
+  # Reported, never selected on.
+  secondary_reported_criteria:
+    - "per_class_iou"
+    - "per_class_f1"
+    - "macro_iou"
+    - "micro_iou"
+    - "confusion_matrix"
+  forbid_selection_on_training: true
+  forbid_selection_on_test: true
+  forbid_selection_on_external_validation: true
+  # A floor, not a sufficiency claim: two distinct activations is the minimum
+  # that can show the difference between event-specific and generalisable
+  # behaviour at all.
+  min_validation_activations_for_a_reportable_threshold: 2
+  validation_activations_available_locally: 1
+  value_status: "DEFERRED(blocked on validation data)"
+  development_only_until_satisfied: true
   record_sensitivity_curve: true
 
 # -----------------------------------------------------------------------------

@@ -386,39 +386,231 @@ class TestAuditedTrainingDatasetFacts:
         assert datasets["sen1floods11"]["backscatter_representation"] == "decibel"
 
     def test_kuro_siwo_representation_is_verified_by_numeric_evidence(self):
-        """Resolved from four independent lines of evidence.
+        """Resolved from four lines of evidence, then confirmed on real data.
 
-        No sentence in the paper states the scale, so the status string must
-        keep saying that even though the conclusion is now firm. The published
-        channel statistics are pinned because they are the adapter's
-        cross-check: a delivered raster whose distribution does not match them
-        is not the product we think it is.
+        No sentence in the paper states the scale, so the status string must keep
+        saying that even though the conclusion is now firm. The reference channel
+        statistics are pinned because they are the published values -- but see
+        `test_reference_statistics_are_not_a_per_raster_gate` for why they are a
+        tolerance-banded reference rather than an acceptance test.
         """
         kuro = self._datasets()["kuro_siwo"]
         status = kuro["backscatter_representation_status"]
         assert status.startswith("VERIFIED")
-        assert "not stated in prose" in status
-        stats = kuro["published_channel_statistics"]
+        assert kuro["backscatter_representation"] == "linear"
+        stats = kuro["reference_statistics"]
         assert stats["data_mean"] == {"vv": 0.0953, "vh": 0.0264}
         assert stats["data_std"] == {"vv": 0.0427, "vh": 0.0215}
         assert stats["clamp_max"] == 0.15
         # A linear-power mean is order 0.1; a decibel mean would be order -10.
         assert 0.0 < stats["data_mean"]["vv"] < 1.0
 
-    def test_kuro_siwo_validity_is_a_separate_raster_not_a_label_value(self):
-        """Regression guard for a real error this repository made and fixed.
+    def test_reference_statistics_are_not_a_per_raster_gate(self):
+        """Corrected 2026-10-08 against the delivered dataset.
 
-        An earlier revision recorded "3: Invalid pixels" as a stored class with
-        ignore_index semantics. It is not: the mask carries {0,1,2} and validity
-        is a separate binary raster. An adapter built on the wrong reading would
-        filter label==3, match nothing, and silently train on invalid pixels.
+        An earlier revision claimed "a delivered raster whose distribution does
+        not match these is not what we think it is". Measuring 150 delivered MS1
+        tiles from 3 of 27 train activations gave clipped VV mean 0.1180 against
+        a published 0.0953 -- 24% high, from a correct product read correctly.
+        A per-raster equality gate would therefore reject valid data.
+
+        The published values stay recorded as a reference for a tolerance-banded
+        check over the full training split, and are explicitly NOT usable as our
+        fitted normalisation parameters because their pre/post, split and
+        aggregation bases are all unstated upstream.
+        """
+        stats = self._datasets()["kuro_siwo"]["reference_statistics"]
+        assert stats["cross_check_is_per_raster_equality_gate"] is False
+        assert stats["cross_check_policy"] == "tolerance_banded_over_full_training_split"
+        assert stats["usable_as_fitted_normalisation_parameters"] is False
+        for basis in ("basis_pre_or_post", "basis_split", "basis_aggregation"):
+            assert stats[basis] == "UNSTATED"
+
+    def test_fitted_statistics_come_only_from_the_adapter_training_split(self):
+        """The hard leakage invariant, stated at the corpus level."""
+        kuro = self._datasets()["kuro_siwo"]
+        assert kuro["fitted_statistics_source"] == "adapter_training_split_only"
+
+    def test_delivered_sar_is_not_pre_clipped(self):
+        """Verified on delivered data: observed VV max is 901.92, not 0.15.
+
+        The upstream 0.15 clamp is a loader-time operation, not a property of
+        the stored raster. An adapter that assumed the clip was already applied
+        would train on a distribution thousands of times wider than intended,
+        so the clip must be an explicit declared pipeline step.
         """
         kuro = self._datasets()["kuro_siwo"]
+        assert kuro["delivered_is_pre_clipped"] is False
+        assert kuro["clip_0_15_is_explicit_adapter_operation"] is True
+        assert kuro["observed_max_linear"]["vv"] > 0.15
+
+    def test_kuro_siwo_label_nodata_is_stored_but_is_not_a_semantic_class(self):
+        """Corrected 2026-10-08. Guards BOTH directions of a real error.
+
+        History: an early revision recorded "3: Invalid pixels" as a stored
+        class with ignore_index semantics. Commit 93ab592 removed it, correctly
+        reasoning that 3 is not a semantic class -- but then over-corrected by
+        declaring the stored value set exhaustive at {0,1,2}.
+
+        The delivered raster disproves that: MK0_MLU stores {0,1,2,3}, value 3
+        is 6.48% of label pixels, and info.json declares MK0_MLU.nodata = 3.
+
+        So both readings were wrong in opposite directions. Treating 3 as a
+        class trains a phantom category; treating 3 as absent feeds an
+        undeclared value into the label tensor. This test pins the narrow truth
+        in between: semantic {0,1,2}, stored {0,1,2,3}, nodata 3.
+        """
+        kuro = self._datasets()["kuro_siwo"]
+        # 3 is NOT a semantic class -- the invariant 93ab592 got right.
         assert set(kuro["label_classes"]) == {0, 1, 2}
         assert 3 not in kuro["label_classes"]
-        assert kuro["label_values_are_exhaustive"] is True
-        assert kuro["validity_representation"] == "separate_binary_raster"
+        assert kuro["label_semantic_values"] == [0, 1, 2]
+        assert kuro["label_nodata_is_a_semantic_class"] is False
+        # ... but it IS a stored value, which 93ab592 denied.
+        assert kuro["label_stored_values"] == [0, 1, 2, 3]
+        assert kuro["label_nodata_value"] == 3
+        assert kuro["label_values_are_exhaustive"] is False
+        assert 3 in kuro["label_stored_values"]
+        assert 3 not in kuro["label_semantic_values"]
+
+    def test_kuro_siwo_validity_mechanisms_are_redundant_not_exclusive(self):
+        """Corrected 2026-10-08 against the delivered dataset.
+
+        The contract previously recorded validity as a separate binary raster
+        "NOT a label value". Measurement over 120 tile pairs found zero
+        disagreement between MLU==3, MNA==0 and SAR==0.0 -- validity is encoded
+        three times, redundantly, not one way exclusively.
+
+        The redundancy is kept because it yields three independent integrity
+        checks on a delivered tile.
+        """
+        kuro = self._datasets()["kuro_siwo"]
+        mechanisms = kuro["validity_mechanisms"]
+        assert set(mechanisms) == {
+            "separate_binary_raster",
+            "label_nodata_sentinel",
+            "sar_nodata_zero",
+        }
+        assert kuro["validity_mechanisms_are_redundant"] is True
+        assert kuro["validity_canonical_source"] == "MK0_MNA == 1"
         assert "0=invalid" in kuro["validity_semantics"]
+
+    def test_kuro_siwo_validity_integrity_assertions_are_declared(self):
+        """The three-way agreement must be asserted by the adapter, not assumed."""
+        kuro = self._datasets()["kuro_siwo"]
+        assertions = " ; ".join(kuro["validity_integrity_assertions"])
+        assert "MK0_MLU == 3" in assertions and "MK0_MNA == 0" in assertions
+        assert "SAR == 0.0" in assertions
+        assert kuro["validity_integrity_verified_on_delivered_data"] is True
+
+    def test_only_the_labelled_partition_is_valid_adapter_input(self):
+        """Partition 00 carries no label raster at all.
+
+        Verified on delivered data: partition 01 holds 10 tif + info.json
+        including MK0_MLU; partition 00 holds 7 tif + info.json with no label,
+        aoiid None, and an "_NA_" filename component. An adapter that globbed
+        every info.json would ingest label-free tiles as supervised samples.
+        """
+        contract = self._datasets()["kuro_siwo"]["partition_contract"]
+        assert contract["required_for_supervised_training"] == "LABELLED_01"
+        assert contract["rejected_for_supervised_training"] == "UNLABELLED_00"
+        assert contract["must_not_glob_all_info_json"] is True
+        assert contract["partition_01_discriminators"]["aoiid"] == 1
+        assert contract["partition_00_discriminators"]["aoiid"] is None
+
+    def test_catalogue_rows_are_not_an_on_disk_inventory(self):
+        """catalogue.gkpg is source-level and lists non-exported grids.
+
+        Verified on all five delivered activations: 3 rows per grid_id, and
+        (rows where exported=1) / 3 equals the on-disk grid count exactly. The
+        catalogue enumerates more grids than exist, so `exported == 1` is a
+        required filter rather than an optional one.
+        """
+        contract = self._datasets()["kuro_siwo"]["catalogue_contract"]
+        assert contract["required_state"] == "exported == 1"
+        assert contract["rows_per_grid"] == 3
+        assert contract["granularity"].startswith("source_level")
+        assert contract["exported_1_iff_on_disk"] is True
+
+    def test_temporal_roles_come_from_metadata_not_filenames(self):
+        """info.json declares master/crank; the adapter must read them."""
+        kuro = self._datasets()["kuro_siwo"]
+        assert "info.json" in kuro["temporal_role_source"]
+        assert "master" in kuro["temporal_role_source"]
+        assert "crank" in kuro["temporal_role_source"]
+        roles = kuro["temporal_roles"]
+        assert "MS1" in roles["post"]
+        assert "SL1" in roles["pre_rank_1"]
+        assert "SL2" in roles["pre_rank_2"]
+
+    def test_sl1_is_the_canonical_pre_event_and_sl2_is_recorded_as_dropped(self):
+        """Dropping real data is allowed; dropping it silently is not."""
+        kuro = self._datasets()["kuro_siwo"]
+        assert kuro["baseline_pre_selection"] == "SL1"
+        assert kuro["baseline_dropped_epoch"] == "SL2"
+        assert kuro["baseline_dropped_must_be_recorded"] is True
+
+    def test_native_pixel_spacing_is_not_declared_as_true_ground_metres(self):
+        """Corrected 2026-10-08. The corpus is not a 10 m ground product.
+
+        Every inspected raster carries a 10.0 x -10.0 EPSG:3857 transform --
+        10 PROJECTED units. Web Mercator scales by 1/cos(lat), so measured true
+        ground spacing ranges 8.736 m to 9.798 m across the five delivered
+        activations and nothing in the corpus is 10 m except at the equator.
+
+        A bare `resolution_m: 10` would have told the adapter a Kuro Siwo pixel
+        and a 10 m UTM inference pixel were the same size.
+        """
+        kuro = self._datasets()["kuro_siwo"]
+        assert "resolution_m" not in kuro, "ambiguous key must stay removed"
+        assert kuro["source_crs"] == "EPSG:3857"
+        assert kuro["source_pixel_spacing_projected_units"] == 10
+        assert kuro["source_pixel_spacing_is_true_ground_metres"] is False
+        spacing = kuro["true_ground_spacing_m"]
+        assert spacing["status"].startswith("PER_ACTIVATION")
+        low, high = spacing["measured_range_m"]
+        assert low < 10.0 and high < 10.0, "no activation is 10 m true ground"
+        for actid, metres in spacing["measured"].items():
+            assert 8.0 < metres < 10.0, f"{actid} spacing {metres} out of range"
+
+    def test_bundled_slope_and_dem_are_excluded_from_the_baseline(self):
+        """MK0_SLOPE is not degree-valued and the bundled DEM breaks parity.
+
+        Measured slope is radian-like in bulk (p50 0.124) yet 0.001% of pixels
+        exceed pi/2 and one tile reached 4344.96, so it is neither degrees nor
+        clean radians. M3's dem_slope_degrees declares range (0, 90). The DEM is
+        SRTM 1Sec against a production WorldDEM-30. The baseline is SAR-only, so
+        both are excluded rather than reconciled.
+        """
+        kuro = self._datasets()["kuro_siwo"]
+        assert kuro["bundled_slope_present"] is True
+        assert kuro["bundled_slope_excluded"] is True
+        assert kuro["bundled_slope_observed_max"] > 90.0
+        assert kuro["bundled_dem_excluded_from_baseline"] is True
+        assert "slope_horn_degrees" in kuro["slope_recompute_policy"]
+
+    def test_local_availability_is_recorded_without_altering_the_split(self):
+        """Data scarcity is a readiness blocker, never a reason to bend splits.
+
+        3 of 27 train activations and 1 of 7 validation activations are present.
+        19 validation tiles from a single activation cannot support threshold or
+        checkpoint selection, so that is recorded as insufficient rather than
+        quietly accepted.
+        """
+        kuro = self._datasets()["kuro_siwo"]
+        avail = kuro["local_availability"]
+        assert avail["official_split_modified"] is False
+        assert avail["train_activations_present"] < avail["train_activations_total"]
+        assert avail["val_activations_present"] < avail["val_activations_total"]
+        assert avail["sufficient_for_production_training_run"] is False
+        assert avail["sufficient_for_threshold_selection"] is False
+        assert avail["activation_1111012_present"] is False
+        assert "BLOCKER" in avail["status"]
+        # The upstream split itself must be untouched by any of this.
+        verification = kuro["split_verification"]
+        assert verification["train_count"] == 27
+        assert verification["val_count"] == 7
+        assert verification["test_count"] == 10
 
     def test_kuro_siwo_flood_definition_is_recorded_as_unpublished(self):
         """The process is documented; the decision rules are not released.

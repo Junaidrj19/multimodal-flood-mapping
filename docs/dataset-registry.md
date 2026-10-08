@@ -9,6 +9,16 @@ whether each one is permitted as a **production input** or restricted to
 This registry exists so the `AGENTS.md` §3 data rule is auditable from one
 place. `tests/test_data_boundary.py` enforces the boundary mechanically.
 
+> **Neither permitted training corpus is stored in or redistributed from this
+> repository.** Both remain external, under their own licences, and both
+> licences are **unresolved** upstream (§1.5.5). Any path in `configs/` that
+> names a corpus describes an **external** location; it is not a repository
+> path, and `tests/test_contract_freeze.py` asserts that. Nothing in this
+> document should be read as an offer of the data.
+
+> **The M4 dataset contract is FROZEN** as of 2026-10-08. §1.5.0 is the short
+> form; `docs/m4-architecture-decision.md` §10 is the authoritative ledger.
+
 ## Field definitions
 
 | Field | Meaning |
@@ -122,6 +132,48 @@ Sen1Floods11. Training on any dataset outside this list violates `AGENTS.md`
 §3. The machine-readable list lives at
 `configs/data.yaml:production.training_datasets.allowed_training_datasets`.
 
+#### 1.5.0 Contract summary — the two corpora at a glance
+
+> **FROZEN 2026-10-08.** This table is the short form of the M4 contract freeze
+> (`docs/m4-architecture-decision.md` §10, machine-readable at
+> `configs/data.yaml → m4_contract`). It exists because the single most
+> expensive mistake available here is assuming the two corpora are
+> interchangeable. They differ on eight capabilities, and every one of those
+> differences has bitten a reasonable-looking design somewhere.
+
+| | **Kuro Siwo** | **Sen1Floods11** |
+|---|---|---|
+| **Role** | **PRIMARY supervised training corpus** | **PRIMARY external validation corpus** by default. Auxiliary training is permitted by the specification but **disabled**; enabling it is a deliberate scientific decision, not a config convenience |
+| **SAR representation** | **linear σ⁰** (float32, non-negative, nodata 0.0) | **decibel** (signed, ~−50 to +20) |
+| **Temporal** | **pre + post** (`SL1` + `MS1`; `SL2` dropped and recorded) | **post-only.** No pre-event counterpart, therefore no change-feature supervision and no pre/post pair |
+| **Labels** | **3 semantic classes** `{0 No water, 1 Permanent Waters, 2 Floods}`, stored `{0,1,2,3}`, **nodata sentinel `3`** | **binary** `{0 Not Water, 1 Water}`, **nodata `-1`**. No permanent-vs-flood separation |
+| **Validity** | **three redundant mechanisms**: `MK0_MNA == 1` (canonical), `MK0_MLU == 3`, `SAR == 0.0` | **one**: in-band `LabelHand == -1` |
+| **Optical** | none | 13-band S2 **L1C TOA**, int16 ×10000, no QA mask |
+| **Terrain** | SRTM 1Sec DEM and `MK0_SLOPE` bundled, **both excluded** from the M4 SAR-only baseline | none bundled, none assumed |
+| **Source CRS / spacing** | `EPSG:3857`, **10 projected units** — measured 8.736–9.798 m true ground, per activation | `EPSG:4326`, **~0.000090 degrees** — ~10 m north-south, finer east-west with latitude |
+| **Split** | official, by **`activation_id`**: 27 train / 7 val / 10 test | official, **event-based**, 11 events |
+| **Upstream speckle** | Lee Sigma 7×7 / 3×3 / σ 0.9, **already applied** | none |
+| **Licence** | four-way **discrepancy, unresolved** | **no licence file upstream, unverified** |
+| **In this repository** | **external. Never redistributed** | **external. Never redistributed** |
+
+**Canonical processing targets** (apply to both, and are native to neither):
+WGS 84 / UTM with the zone derived per sample, **10.0 m true ground**, SAR
+resampled bilinearly **in linear power before the dB conversion**, labels and
+validity masks **nearest**, Kuro's 0.15 linear clip applied **at the adapter,
+before dB**.
+
+**Terrain is excluded from the M4 baseline** for both corpora. `MK0_SLOPE` is
+not degree-valued (observed max 4344.96) and the bundled DEM is SRTM 1Sec
+against a production WorldDEM-30, so neither can be consumed without breaking
+either units or train/inference parity.
+
+**Local data is incomplete.** Five of 45 catalogued Kuro Siwo activations are
+present: 3 of 27 train, 1 of 7 validation (19 tiles), 1 of 10 test. Development
+against that subset is permitted; a production training run, threshold
+selection and scientific model selection are not. The official split is never
+redefined by what happens to be downloaded — a locally absent activation is
+**missing**, never "not in the split". Full detail in §1.7.
+
 #### 1.5.1 Kuro Siwo
 
 > **AUDITED against primary sources.** The properties below were read from the
@@ -160,11 +212,16 @@ Sen1Floods11. Training on any dataset outside this list violates `AGENTS.md`
 | Bundled DEM | **SRTM 1 arc-second** — *not* Copernicus WorldDEM-30 | VERIFIED(source) |
 | Polarisations | VV and VH | VERIFIED(source) |
 | Product levels | Level-1 GRD and Level-1 SLC | VERIFIED(source) |
-| Resolution | 10 m pixel spacing | VERIFIED(source) |
+| Resolution | **10 projected units in EPSG:3857 — NOT 10 m true ground.** True spacing measured 8.736–9.798 m across five delivered activations. | **CORRECTED 2026-10-08** — see §1.7 |
 | Tile size | 224 × 224 | VERIFIED(source) |
-| CRS | EPSG:3857 | VERIFIED(source) |
-| Backscatter representation | **linear σ⁰** | **INFERRED** — `Calibration` sets `outputImageScaleInDb=false` and the GRD graph contains no `LinearToFromdB` node; `clamp_input: 0.15` is consistent. **No source states it in prose.** |
-| Temporal structure | **Triplet: two pre-event images + one post-event image** | VERIFIED(source) |
+| CRS | EPSG:3857 | VERIFIED(source + delivered data) |
+| Backscatter representation | **linear σ⁰** | **VERIFIED(delivered data)** — float32, non-negative, nodata 0.0, order 0.1, observed max 901.92. Confirms the earlier inference; see §1.7 |
+| Delivered clipping | **None. Data is NOT pre-clipped** (VV max 901.92 ≫ 0.15). The 0.15 clamp is loader-time. | **VERIFIED(delivered data)** — §1.7 |
+| Partitions | `01` labelled (10 tif + info.json, has `MK0_MLU`) and `00` **unlabelled** (7 tif, **no label raster**, `aoiid: null`) | **VERIFIED(delivered data)** — §1.7 |
+| Label stored values | `{0,1,2,3}` where **3 is nodata**, declared by `info.json` as `MK0_MLU.nodata = 3`. Semantic classes remain `{0,1,2}`. | **CORRECTED 2026-10-08** — §1.7 |
+| Validity | **Redundant, three ways**: `MK0_MNA==0` ⇔ `MK0_MLU==3` ⇔ `SAR==0.0`, zero disagreement over 120 tile pairs. Canonical source `MK0_MNA == 1`. | **VERIFIED(delivered data)** — §1.7 |
+| Bundled slope | `MK0_SLOPE` present but **not degree-valued**; observed max 4344.96. **Excluded.** | **VERIFIED(delivered data)** — §1.7 |
+| Temporal structure | **Triplet: two pre-event images + one post-event image.** Roles are machine-readable: `MS1.master=true` (post), `SL1` `crank=1`, `SL2` `crank=2`. | VERIFIED(source + delivered data) |
 | GRD preprocessing chain | Apply-Orbit-File (Sentinel Precise) → Subset → ThermalNoiseRemoval → Remove-GRD-Border-Noise (`borderLimit 500`) → Land-Sea-Mask (SRTM) → Calibration (`outputSigmaBand=true`) → Speckle-Filter (**Lee Sigma, 7×7, target 3×3, sigma 0.9**) → Terrain-Correction (SRTM 1Sec HGT, bilinear, 10 m, EPSG:3857) | VERIFIED(source) |
 | Per-sample metadata | caption dates, climate zone, AOI id, activation id, DEM. **Orbit, incidence angle and geotransform not confirmed as per-sample fields**; incidence-angle saving is `false` in both graphs. | partly TODO(verify) |
 
@@ -266,12 +323,12 @@ domain-shift risk in `docs/scientific-assumptions.md` §9 is therefore
 | Field | Value |
 |---|---|
 | **dataset** | **Sen1Floods11** — VERIFIED(spec) as permitted, **optional**. |
-| **purpose** | Optional supplementary training data for **surface-water** segmentation. |
-| **allowed_as_input** | **YES** — optional training input |
-| **validation_only** | NO |
+| **purpose** | **PRIMARY external validation corpus** for **surface-water** segmentation (M4 contract C6). Auxiliary training is permitted by the specification but **disabled by default** (`auxiliary_training_enabled: false`): enabling it means accepting a different SAR representation, no pre-event imagery and binary labels, which is a scientific decision rather than a configuration one. |
+| **allowed_as_input** | **YES** — external validation by default; optional training input only if explicitly enabled |
+| **validation_only** | NO — it is a *permitted* dataset. "External validation" here is our chosen role, not a prohibition on training |
 | **license** | **NO LICENSE FILE UPSTREAM.** See §1.5.5. |
 | **citation** | Bonafilia, Tellman, Anderson & Issenberg (2020), *Sen1Floods11: A Georeferenced Dataset to Train and Test Deep Learning Flood Algorithms for Sentinel-1*, CVPR Workshops 2020, 210–211. BibTeX on the CVF page. — VERIFIED(source) |
-| **status** | **VERIFIED(source)** properties below · **NOT ACQUIRED** |
+| **status** | **VERIFIED(source)** properties below · **NOT ACQUIRED** · **external to this repository** |
 
 **Verified technical properties**
 
@@ -281,17 +338,59 @@ domain-shift risk in `docs/scientific-assumptions.md` §9 is therefore
 | Bundled DEM | **None.** SRTM/ASTER is used inside GEE terrain correction but is not distributed as a layer. | VERIFIED(source) |
 | Polarisations | VV (band 0) and VH (band 1) | VERIFIED(source) |
 | Product level | GRD, IW mode | VERIFIED(source) |
-| Backscatter representation | **decibels** — README states *"Unit: dB"* | **VERIFIED(source)** |
+| Backscatter representation | **decibels** — README states *"Unit: dB"*. Signed; ~−50 to +20 observed. **No clipping, no normalisation.** | **VERIFIED(source)** |
 | S1 preprocessing | Per GEE: thermal noise removal → radiometric calibration → terrain correction (SRTM 30 / ASTER) → *"converted to decibels via log scaling (10*log10(x))"*. **No speckle filter.** | VERIFIED(source) |
 | Optical processing level | **L1C — top-of-atmosphere reflectance, NOT L2A surface reflectance** | VERIFIED(source) |
 | Optical bands | all 13 (B1–B12 incl. B8A), *"Does not contain QA mask"* | VERIFIED(source) |
-| Optical scaling | TOA reflectance **scaled by 10000** | VERIFIED(source) |
-| Resolution | 10 m; all S2 bands resampled to the common 10 m grid | VERIFIED(source) |
+| Optical scaling | TOA reflectance **scaled by 10000**, int16 | VERIFIED(source) |
+| Pixel spacing | **~0.000090 degrees in EPSG:4326 — NOT 10 m true ground.** A geographic CRS has no metre spacing: north-south is ~10 m everywhere, east-west shrinks with cos(latitude). All S2 bands are resampled to this common grid. | **CORRECTED 2026-10-08** — see §1.5.2.1 |
 | Chip size | 512 × 512 | VERIFIED(source) |
 | CRS | EPSG:4326 | VERIFIED(source) |
-| Temporal structure | **Single acquisition per chip — no pre-event image** | VERIFIED(source) |
+| Hand-labelled inventory | **446 flood chips** plus **814 permanent-water chips**. Per sample: `S1Hand`, `S2Hand`, `LabelHand`, `S1OtsuLabelHand`, `JRCWaterHand` | VERIFIED(source) |
+| Temporal structure | **Single post-event acquisition per chip — no pre-event image.** Therefore no temporal pair, no change features, no change supervision. | VERIFIED(source) |
 | S1/S2 date alignment | **Close but not always identical** — offsets up to 2 days observed (e.g. Ghana S1 2018-09-18 / S2 2018-09-19; Sri Lanka S1 2017-05-30 / S2 2017-05-28) | VERIFIED(source) |
 | Per-sample metadata | `s1_date`, `s2_date`, `orbit` (ASC/DESC), `rel_orbit_num`, `location`, `ISO_CC`, `VH_thresh` | VERIFIED(source) |
+
+##### 1.5.2.1 Corrected: pixel spacing was recorded in the wrong unit
+
+`configs/data.yaml` previously recorded `resolution_m: 10` for this corpus under
+`crs: EPSG:4326`. That is a **unit error**, not an approximation — the grid step
+is in degrees, and a degree of longitude shrinks with `cos(lat)` exactly as a
+Web Mercator metre grows with `1/cos(lat)`.
+
+It is the same class of defect corrected on the Kuro Siwo side in §1.7, and it
+mattered for the same reason: a bare `resolution_m: 10` on both corpora would
+have told the adapter that a Sen1Floods11 pixel, a Kuro Siwo pixel and a 10 m
+UTM pixel were interchangeable. None of the three are.
+
+Unlike the Kuro Siwo correction, **this one is not measurement-backed.** The
+dataset is deliberately absent from this repository (C11), so the spacing is
+recorded from the published description and marked
+`source_pixel_spacing_status: "VERIFIED(source) — not measured on a delivery"`.
+Per-chip spacing must be derived from each chip's own transform and centre
+latitude when the data arrives.
+
+##### 1.5.2.2 Capabilities this corpus does NOT have
+
+Recorded as a machine-readable `forbidden_capability_upgrades` list in
+`configs/data.yaml`, because the prohibition needs to be testable rather than
+remembered. An adapter must not synthesise:
+
+| Absent capability | Why synthesising it is the tempting mistake |
+|---|---|
+| **pre-event imagery** | Reusing the post-event image, or substituting a neighbouring chip, would let one code path serve both corpora |
+| **temporal pairs** | Same shortcut, one level up |
+| **change-detection features** | A change feature built on a faked pre-image is **identically zero or pure noise**, and nothing downstream can detect it |
+| **permanent-water vs flood separation** | `JRCWaterHand` ships alongside the label and looks like a permanent-water layer. It is a separate JRC-derived raster, and the 814 permanent-water chips are a chip *selection*; `LabelHand` is binary in every chip |
+| **BOA surface reflectance** | The optical data is L1C TOA. Treating it as L2A would silently compare uncorrected to corrected reflectance |
+| **terrain / DEM features** | SRTM/ASTER was used *inside* GEE terrain correction but is not distributed |
+| **Kuro-style 3-class semantics** | Mapping binary water onto `{No water, Permanent Waters, Floods}` would invent a class the labels never asserted |
+
+The capability model (C8) encodes this structurally rather than by convention:
+`change_features` cannot be declared without `temporal_pair`, and
+`temporal_pair` cannot be declared without both `pre_event` and `post_event`.
+The validator rejects the combination, so the shortcut fails at configuration
+load rather than silently at training time.
 
 **Label classes — VERIFIED(source)**
 
@@ -547,6 +646,121 @@ explicit operator-supplied AOI.
 
 ---
 
+### 1.7 Delivered-data inspection — 2026-10-08
+
+A local Kuro Siwo delivery was inspected read-only at
+`/Users/mohammedjunaid/Documents/kuro_siwo` (12 GB, 71,065 `.tif`, 7,108
+`.json`, 5 `catalogue.gkpg`). Nothing in that directory was modified, copied or
+reorganised. This section records what the delivery established and, where it
+differs, **which earlier entries it supersedes**.
+
+**Superseded assumptions.** Four prior claims were wrong and are corrected:
+
+| # | Prior claim | Delivered evidence | Why it mattered |
+|---|---|---|---|
+| 1 | `label_values_are_exhaustive: true`, stored set `{0,1,2}` | `MK0_MLU` stores `{0,1,2,3}`; 3 is 6.48% of label pixels (195,003 / 3,010,560 over 60 tiles); `info.json` declares `MK0_MLU.nodata = 3` | An adapter trusting `{0,1,2}` feeds an undeclared value into the label tensor and corrupts a fixed-width softmax |
+| 2 | Validity is a separate raster, "**NOT** a label value" | Validity is encoded **three times, redundantly**: `MK0_MNA==0` ⇔ `MK0_MLU==3` ⇔ `SAR==0.0`, with **zero** disagreement over 120 tile pairs | The forms are not mutually exclusive; modelling them as a single enum discards two free integrity checks |
+| 3 | `resolution_m: 10` | Transform is uniformly `10.0 × −10.0` **projected units** in EPSG:3857 across 200 sampled rasters; true ground spacing 8.736–9.798 m | Implies a Kuro Siwo pixel equals a 10 m UTM pixel. It does not, and the error grows with latitude |
+| 4 | "a delivered raster whose distribution does not match these is not what we think it is" | A correct product read correctly gives clipped VV mean 0.1180 vs published 0.0953 on a 3-activation subset | A per-raster equality gate would reject valid data |
+
+**Structure.** Per activation: `catalogue.gkpg` plus two partitions.
+
+- **`01` — labelled.** Flat `uuid`-hex directories. 10 `.tif` + `info.json`:
+  `MK0_MLU`, `MK0_MNA`, `MK0_DEM`, `MK0_SLOPE`, and `MS1`/`SL1`/`SL2` × `IVV`/`IVH`.
+  `info.json` has `aoiid: 1` and numeric `pwater`/`pflood`.
+- **`00` — unlabelled.** Two-level `<2-hex-prefix>/<uuid>` directories. 7 `.tif`
+  + `info.json`, **no `MK0_MLU` at all**, no DEM, no slope. Filename AOI
+  component is `_NA_`; `aoiid: null`, `pwater`/`pflood` `null`.
+
+The adapter must therefore select partition `01`. Globbing `*/*/*/info.json`
+would ingest label-free tiles as supervised samples.
+
+**`info.json`.** Top level: `grid_id`, `actid`, `aoiid`, `flood_date`, `geom`
+(WKT polygon, EPSG:3857 metres), `gvalid`, `pcovered`, `pwater`, `pflood`,
+`slavecov`, `mastercov`, `revision`, `version`. A `sources` map keyed
+`MS1`/`SL1`/`SL2` carries `source_date`, `s1_ids`, `master`, `coverage`,
+`crank` — so **temporal roles are machine-readable and must not be parsed from
+filenames**: `MS1.master == true` is post-event, `SL1` is `crank 1`, `SL2` is
+`crank 2`. A `datasets` map declares per-raster `nodata`, `dtype`, `ptype`,
+`pname`.
+
+**`catalogue.gkpg`** (upstream misspells `.gpkg`). Single table `catalogue`,
+**source-level**: 3 rows per `grid_id`. Verified on all five activations —
+`(rows where exported=1) ÷ 3` equals the on-disk grid count **exactly**:
+
+| actid | rows | distinct `grid_id` | `exported=0` | implied | on disk |
+|---|---|---|---|---|---|
+| 1111002 | 107 | 36 | 5 | 34 | **34** |
+| 1111003 | 66 | 22 | 9 | 19 | **19** |
+| 1111004 | 15,165 | 5,056 | 162 | 5,001 | **5,001** |
+| 1111005 | 4,167 | 1,389 | 60 | 1,369 | **1,369** |
+| 1111006 | 2,098 | 702 | 43 | 685 | **685** |
+
+The catalogue lists more grids than exist locally, so `exported == 1` is a
+required filter, not an optional one.
+
+**Measured true ground spacing.** `1/cos(lat)` applied to each activation's
+centre latitude, derived from `info.json.geom`:
+
+| actid | centre lat | `1/cos(lat)` | true spacing |
+|---|---|---|---|
+| 1111003 | 11.536° | 1.0206 | **9.798 m** |
+| 1111002 | 12.238° | 1.0233 | **9.773 m** |
+| 1111006 | −16.421° | 1.0425 | **9.592 m** |
+| 1111005 | −17.622° | 1.0492 | **9.531 m** |
+| 1111004 | 29.121° | 1.1447 | **8.736 m** |
+
+This converts §7a.3 of `m4-architecture-decision.md` from a *flagged risk* to an
+**established fact**: SNAP wrote nominal projected units and did not compensate
+for local scale. Nothing in this corpus is 10 m true ground.
+
+**Statistics.** Over 150 delivered `MS1` tiles, valid pixels only
+(`MNA==1 & value>0`), n = 7,103,766 per polarisation:
+
+| | raw | clipped @0.15 | published |
+|---|---|---|---|
+| VV mean | 0.1554 | 0.1180 | 0.0953 |
+| VV std | 1.0425 | 0.0382 | 0.0427 |
+| VH mean | 0.0377 | 0.0373 | 0.0264 |
+| VH std | 0.0376 | 0.0202 | 0.0215 |
+| VV max | **901.92** | — | — |
+
+Two conclusions. The delivery is **not pre-clipped**, so the 0.15 clamp must be
+an explicit pipeline step. And the subset cannot reproduce the published means —
+expected, since it covers 3 of 27 train activations with 1111004 alone at 71% of
+tiles — so the published values are a **tolerance-banded reference over the full
+training split**, never a per-raster gate and never our fitted parameters.
+
+**Bundled slope is unusable.** `MK0_SLOPE` has p50 0.1244, p90 0.2762, p99
+0.5923 — nonsense as degrees — yet 0.001% of pixels exceed π/2, impossible as
+radians, and one sampled tile reached **4344.96**. It is neither cleanly
+degrees nor cleanly radians and carries unexplained outliers. M3's
+`dem_slope_degrees` declares range `(0, 90)`. Excluded; if slope is ever
+required, recompute from `MK0_DEM` via `numerics.slope_horn_degrees` at the
+**per-activation** spacing.
+
+**Local availability.** Five of 45 catalogued activations are present:
+
+| actid | upstream split | labelled tiles |
+|---|---|---|
+| 1111004 | train | 5,001 |
+| 1111005 | train | 1,369 |
+| 1111006 | train | 682 |
+| 1111003 | **validation** | **19** |
+| 1111002 | test (off-limits) | 32 |
+
+That is 3 of 27 train, 1 of 7 validation, 1 of 10 test activations — 7,052
+usable train tiles and **19 validation tiles from a single activation**.
+`1111012` is absent, so no exclusion decision is needed for it in practice.
+
+The validation figure is blocking: `evaluation.yaml` pins
+`threshold_selection.selection_split: "validation"`, and 19 tiles from one event
+cannot support threshold or checkpoint selection. Recorded as a
+production/evaluation readiness blocker. **The official upstream split is
+unchanged and no activation is fabricated.**
+
+---
+
 ## 2. Validation / comparison only — never production inputs
 
 > Everything in this section is forbidden in training, feature construction,
@@ -648,6 +862,25 @@ documented:
   attributions, attached automatically to every `ArtifactProvenance` and
   re-inserted if a caller omits them.
 
+The frozen M4 dataset contract is machine-readable on the same principle:
+
+- `configs/data.yaml → m4_contract` — decisions C1–C12, validated by
+  `floodmap.utils.contract.M4Contract` with pydantic `extra="forbid"`, so a
+  misspelled key fails loudly rather than being ignored.
+- `configs/data.yaml → production.training_datasets.datasets[*].capabilities` —
+  the per-dataset capability model (C8), validated by
+  `floodmap.utils.contract.DatasetCapabilities`. Structured rather than a flat
+  set of booleans, because a capability block must be able to be **absent**
+  (Kuro Siwo has no optical branch) and because validity is a **list** of
+  mechanisms (three for Kuro Siwo, one for Sen1Floods11) rather than one enum.
+- `configs/data.yaml → production.training_datasets.datasets[*].adapter_invariants`
+  — the adapter contract invariants, 18 (C13) and 15 (C14), numbered.
+- `tests/test_contract_freeze.py` — guards every machine-readable decision,
+  including the negative cases: an unknown contract key, a misspelled speckle
+  key, contradictory speckle declarations, a semantic class ID used as output
+  nodata, a change-feature capability without a temporal pair, and
+  incompleteness being turned into permission.
+
 ## 5. Blocking items
 
 The dataset audit (§1.5) resolved most of the previous list. Resolved items are
@@ -665,25 +898,35 @@ kept with their outcome so a later reader can see what was settled and how.
 
 ### 5.2 Still blocking
 
+> **None of these block the M4 contract freeze or the M4 adapter.** The contract
+> is frozen as of 2026-10-08 (`docs/m4-architecture-decision.md` §10). What
+> remains below blocks **redistribution**, **publication** and **scientific
+> claims** — not implementation. Items whose status changed with the freeze or
+> the delivered-data inspection are marked.
+
 | # | Item | Blocks | Why it cannot be closed yet |
 |---|---|---|---|
-| 1 | **Kuro Siwo licence discrepancy** | Redistribution, not use | `LICENSE` says MIT, README says CC BY. Conservative reading adopted (§1.5.5); resolution needs the authors or the HuggingFace card (HTTP 401). |
-| 2 | **Sen1Floods11 has no licence** | Redistribution, not use | No `LICENSE` file, no README statement, GitHub API reports `null`. The spec's "CC BY 4.0" is unconfirmed. Needs the authors. |
-| 3 | **Kuro Siwo flood definition and annotation principles** | Final class semantics | Stated to be in the paper's Supplemental Material, which was not read. Required before our label mapping is frozen. |
-| 4 | **Kuro Siwo stated label noise** | Error analysis, metric interpretation | Not in the main text; likely in the supplement. |
-| 5 | **Sen1Floods11 weak/JRC label encodings** | Any use of the weak portions | README documents values for the hand-labelled layer only. |
-| 6 | **Sen1Floods11 exact test-split composition** | Leakage control | Split files live in the GCS bucket and were not downloaded. |
-| 7 | **Kuro Siwo backscatter representation in prose** | Adapter correctness | Linear σ⁰ is **inferred** from the SNAP graph, not stated. A wrong inference here silently corrupts every SAR feature. Must be confirmed by reading a delivered raster's value distribution. |
-| 8 | **Kuro Siwo "Nepal" AOI geometry** | Whether any near-Himalayan data exists at all | `aoi_name: Patna`, tropical climate zone, and it is in the upstream *test* split. Needs the actual geometry. |
-| 9 | **Himalayan evaluation scenes** | Unseen-Himalaya evaluation | **Neither corpus is documented as containing Himalayan terrain.** This is now a confirmed gap, not an unknown — see §5.3. |
-| 10 | **Licence verification for `data/samples/`** | Committing any sample | Both datasets currently forbid or fail to establish redistribution. |
+| 1 | **Kuro Siwo licence discrepancy** | Redistribution, not use | `LICENSE` says MIT, README says CC BY. Conservative reading adopted (§1.5.5); resolution needs the authors or the HuggingFace card (HTTP 401). Our own policy does not wait for it: nothing is redistributed either way (C11). |
+| 2 | **Sen1Floods11 has no licence** | Redistribution, not use | No `LICENSE` file, no README statement, GitHub API reports `null`. The spec's "CC BY 4.0" is unconfirmed. Needs the authors. Same policy as item 1. |
+| 3 | **Kuro Siwo flood definition and annotation principles** | ~~Final class semantics~~ **Nothing** | **RECLASSIFIED — permanent disclosure, not a task.** Supplemental §4 *was* read: it documents the annotation process but withholds the photointerpretation keys, so the `Floods`/`Permanent Waters` boundary cannot be reconstructed. Now disclosure E1. The label mapping is frozen regardless, because the *stored encoding* is fully known even where the *decision rule* is not. |
+| 4 | **Kuro Siwo stated label noise** | Error analysis, metric interpretation | **RESOLVED as absent.** No kappa and no label-noise estimate are reported anywhere; the published 51%/48% IoU figures are agreement with a product the authors treat as weaker. Recorded as `stated_label_noise: "NONE REPORTED"`. |
+| 5 | **Sen1Floods11 weak/JRC label encodings** | Any use of the weak portions | README documents values for the hand-labelled layer only. Does not block the frozen contract: only the **446 + 814 hand-labelled** chips are in scope, and the weak portions are not used. |
+| 6 | **Sen1Floods11 exact test-split composition** | Leakage control on the external-validation corpus | Split files live in the GCS bucket and were not downloaded. Does not block the adapter; blocks reporting external-validation numbers. |
+| 7 | ~~**Kuro Siwo backscatter representation in prose**~~ | — | **RESOLVED(delivered data).** Confirmed directly on the product: float32, strictly non-negative, nodata 0.0, values of order 0.1, observed max 901.92. Decibel data would be signed and centred near −10 to −15. See §1.7. |
+| 8 | **Kuro Siwo "Nepal" AOI geometry** | Whether any near-Himalayan data exists at all | `aoi_name: Patna`, tropical climate zone, and it is in the upstream *test* split. Needs the actual geometry. Activation `1111007` is not among the five delivered locally. |
+| 9 | **Himalayan evaluation scenes** | Unseen-Himalaya evaluation | **Neither corpus is documented as containing Himalayan terrain.** A confirmed gap, not an unknown — see §5.3. Permanent disclosure E3. |
+| 10 | **Licence verification for `data/samples/`** | Committing any sample | Both datasets currently forbid or fail to establish redistribution. Encoded as `samples_dir_may_hold_training_corpus_samples: false`. |
 | 11 | **EMS / UNOSAT citation formats** | Publishing any comparison | EMSR927 attribution string is now known (§2.1); UNOSAT's is not. |
 | 12 | **WorldDEM-30 attribution wording** | Submission | Confirm whether "© DLR e.V." carries the mark; repository uses the form **with** it. |
+| 13 | **Validation-activation coverage** | A **reportable** threshold or checkpoint, not the adapter | Only 1 of 7 official validation activations is present locally (19 tiles). C6 freezes the *criterion* and marks any threshold selected in this state `development_only`. Needs more of the corpus. |
+| 14 | **Reference-statistics cross-check** | Passing the tolerance band, not the adapter | The 3-activation subset gives clipped means 24–41% above published, for legitimate sampling reasons. The check is tolerance-banded over the **full** training split and cannot run until more activations exist. |
+| 15 | **Activation-geometry disjointness** | Confirming C7's zero buffer, not the adapter | Activation-level splitting isolates events, not geography. Verifying needs all 45 activation geometries; 5 are available. Recorded `PENDING(data)`. |
+| 16 | **Speckle ablation** | Any transfer claim, not the adapter | C4 freezes a disclosed mismatch and requires the ablation before transfer is claimed. The ablation is M4 work and needs a trained model. |
 
 ### 5.3 The gap the audit opened
 
-Items 1–8 are ordinary verification work. Item 9 is different, and it is the
-most consequential finding in this registry.
+Items 1–8 and 10–16 are ordinary verification work or data-coverage gaps. Item 9
+is different, and it is the most consequential finding in this registry.
 
 **Neither permitted training corpus is documented as containing Himalayan or
 high-mountain terrain.** Kuro Siwo's only Nepal-labelled activation is tropical
