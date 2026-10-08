@@ -816,6 +816,10 @@ class DatasetCapabilities(_Strict):
     sar_representation: _SarRepresentation
     optical_representation: Optional[_OpticalRepresentation] = None
     splits: _SplitCapabilities
+    # C8 deliberately permits more than one validity mechanism.  The detailed
+    # list lives beside the structured capability block in data.yaml for
+    # backwards-compatible configuration, and is attached by the loader below.
+    validity_mechanisms: Tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _optical_block_matches_the_optical_flag(self) -> "DatasetCapabilities":
@@ -972,7 +976,9 @@ def load_dataset_capabilities(
                 "absent block is indistinguishable from an unchecked one"
             )
         try:
-            capabilities[dataset_id] = DatasetCapabilities.model_validate(block)
+            enriched = dict(block)
+            enriched["validity_mechanisms"] = tuple(entry.get("validity_mechanisms", ()))
+            capabilities[dataset_id] = DatasetCapabilities.model_validate(enriched)
         except Exception as exc:
             raise ContractConfigurationError(
                 f"invalid capabilities for dataset {dataset_id!r}: {exc}"
