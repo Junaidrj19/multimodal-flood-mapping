@@ -755,62 +755,127 @@ dependency set is pinned.
 
 ## 5. Training datasets
 
-> ### VERIFIED(spec) — list resolved, properties not
+> ### AUDITED — properties verified from primary sources
 >
-> The official Track B specification enumerates the permitted training
-> datasets: **Kuro Siwo** (production training input, MIT / CC BY, Bountos et
-> al., 2024, NeurIPS 2024) and **Sen1Floods11** (optional training input, CC BY
-> 4.0, Bonafilia et al., 2020, CVPRW 2020). The list is **closed** — training
-> on anything outside it violates `AGENTS.md` §3.
+> The permitted list is **closed**: **Kuro Siwo** (required) and
+> **Sen1Floods11** (optional). Training on anything outside it violates
+> `AGENTS.md` §3.
 >
-> This resolves the previous UNKNOWN (blocking) on *which* datasets. It does
-> **not** resolve their contents. Nothing below may be filled in from memory of
-> these datasets' papers: every property must be read from the delivered data.
+> Both corpora have now been audited against their own repositories, LICENSE
+> files and papers. The full audit with source URLs and verbatim quotes is in
+> `docs/dataset-registry.md` §1.5; the machine-readable form is in
+> `configs/data.yaml → production.training_datasets.datasets`. This section
+> records only what the *contract* depends on.
+
+### 5.1 What was resolved
+
+| Question | Answer |
+|---|---|
+| Does either dataset label debris or sediment? | **No.** Both class lists are exhaustive and water-only. |
+| Does either separate permanent water from flood water? | **Kuro Siwo yes** (3-class), **Sen1Floods11 no** (binary). |
+| Do they share label semantics? | **No.** See §5.3. |
+| Do they ship optical data? | **Kuro Siwo no. Sen1Floods11 yes** — L1C TOA, 13 bands. |
+| Do they ship a DEM? | **Kuro Siwo yes** (SRTM 1Sec). **Sen1Floods11 no.** Neither uses Copernicus WorldDEM-30. |
+| Do they agree on SAR representation? | **No. Kuro Siwo is linear σ⁰** (inferred from its SNAP graph); **Sen1Floods11 is dB** (stated). |
+| Do they provide pre-event imagery? | **Kuro Siwo: 2 pre + 1 post. Sen1Floods11: post only.** |
+| Official splits? | **Both event/geography based.** Must be honoured. |
+| Licences? | **Neither is cleanly established.** See §5.4. |
+
+### 5.2 Label taxonomies — VERIFIED(source)
+
+**Kuro Siwo** — stored label mask, with validity held **separately**:
+
+```text
+mask.npy        0 = No water
+                1 = Permanent Waters
+                2 = Floods          (exhaustive — there is no fourth value)
+
+valid_mask.npy  0 = invalid
+                1 = valid           (a SEPARATE raster, not a label value)
+```
+
+> **Correction.** An earlier revision of this contract recorded
+> `3 = Invalid pixels (ignored)` as a stored class with `ignore_index`
+> semantics. That was wrong. The label mask carries only `{0, 1, 2}`; validity
+> is a separate binary raster that the upstream loader reads independently and
+> applies as `valid_mask == 1`. The `3: "Invalid pixels"` entry does exist in
+> the upstream `CLASS_LABELS` dict, but `CLASS_LABELS[3]` is **never referenced
+> anywhere in that codebase**, and no `ignore_index` key exists in any of its
+> configs.
 >
-> Open and material: whether Kuro Siwo distinguishes debris/sediment from water.
-> Track B requires both. See `docs/dataset-registry.md` §1.5.
+> The error mattered rather than being cosmetic: an adapter written against it
+> would have filtered `label == 3`, matched nothing, and then trained on
+> invalid pixels while appearing to handle them. **REQUIRED:** the adapter reads
+> two rasters per sample and derives the loss/metric mask from `valid_mask`.
 
-The contract below specifies **what must be recorded for each of the two
-datasets before it is used**, and applies to both equally.
+**Sen1Floods11** (hand-labelled QC layer, README):
 
-### 5.1 Source
+```text
+-1 = No Data / Not Valid
+ 0 = Not Water
+ 1 = Water
+```
 
-- **REQUIRED:** dataset name, version, provider, access URL, retrieval date.
+### 5.3 The two taxonomies are not interchangeable
 
-### 5.2 License and citation metadata
+This is the contract-relevant consequence, and it is asymmetric:
 
-- **REQUIRED:** license identifier and full text location.
-- **REQUIRED:** the citation the license/paper demands. `AGENTS.md` §18 requires
-  training datasets be cited per their respective licenses and papers.
-- **REQUIRED:** confirmation that the license permits this use (a research
-  prototype, publicly demonstrated).
+```text
+Kuro Siwo  {Permanent Waters, Floods}  --lossy-->  Sen1Floods11 {Water}
+Sen1Floods11 {Water}                   --IMPOSSIBLE-->  {Permanent, Flood}
+```
 
-### 5.3 Labels
+- Mapping Kuro Siwo **down** to binary surface water is well defined but
+  **discards the permanent-vs-flood distinction** — the one thing that stops a
+  river being reported as flood on every run
+  (`docs/scientific-assumptions.md` §7).
+- Mapping Sen1Floods11 **up** to the 3-class scheme is **not possible from its
+  labels**. Its `Water` class conflates both. The JRC permanent-water chips are
+  a *separate subset*, not a class value, so they cannot relabel the flood
+  chips.
+- Therefore a naive union of the two corpora under one head is **not permitted**
+  by this contract: it would either silently relabel Sen1Floods11 flood water as
+  a 3-class value it does not carry, or silently collapse Kuro Siwo's most
+  valuable distinction. The harmonisation rule is specified in
+  `docs/evaluation-protocol.md` §2.5 and the architectural resolution in
+  `docs/m4-architecture-decision.md`.
 
-- **REQUIRED:** class definitions **in the dataset's own words**, not ours.
-- **REQUIRED:** an explicit mapping from dataset labels to project classes
-  (`configs/segmentation.yaml → classes.label_mapping`).
-- **Critical compatibility question:** does the dataset distinguish *flood
-  water* from *debris/mud*? The project's stated target is "flood/debris"
-  segmentation, and if the labels only cover open water then debris cannot be
-  predicted and the claim must be narrowed. **UNKNOWN** until the list exists.
-- **REQUIRED:** label provenance — manually annotated, semi-automatic, or
-  threshold-derived — plus any stated label noise. A model cannot be more
-  reliable than its labels.
+**REQUIRED:** `configs/segmentation.yaml → classes.label_mapping` must state the
+mapping per source dataset, and must record which direction was used and what
+was lost.
 
-### 5.4 Modalities
+### 5.4 Licensing — REQUIRED to carry, not yet established
 
-- **REQUIRED:** which modalities the dataset provides (SAR / optical / DEM),
-  with bands, polarisations and processing level.
-- **REQUIRED:** compatibility check against our inference-time inputs. Training
-  on a modality combination we cannot reproduce at inference is a silent
-  train/serve mismatch.
+Per `AGENTS.md` §18 training datasets must be cited per their licence and paper.
+Both must be cited; neither licence is confirmed.
 
-### 5.5 Expected preprocessing
+| Dataset | Repository LICENSE | README | Paper | Spec claim | Conservative reading |
+|---|---|---|---|---|---|
+| Kuro Siwo | **MIT** | **CC BY** (no version) | MIT | MIT | **Data CC BY + code MIT; attribution required** |
+| Sen1Floods11 | **ABSENT** (API `license: null`) | none | CVF boilerplate only | CC BY 4.0 (**unconfirmed**) | **No redistribution right established** |
 
-- **REQUIRED:** the preprocessing the dataset was produced with, and whether it
-  matches ours. A mismatch in calibration, speckle filtering or dB conversion is
-  a domain shift that will not announce itself.
+- **REQUIRED:** citations are carried on any artifact or publication derived
+  from either corpus. Both full citations are in
+  `docs/dataset-registry.md` §1.5.
+- **REQUIRED:** no sample from either dataset is committed to this repository
+  until the licence is resolved. `redistribution_permitted` is `null` for Kuro
+  Siwo and `false` for Sen1Floods11.
+- Discrepancies are **preserved, not collapsed**. Asserting a single licence
+  identifier would be a claim this project cannot support.
+
+### 5.5 Required records per dataset
+
+Unchanged in intent from the original contract; now partly satisfied by the
+audit. Each dataset must have on file: source and retrieval date; licence and
+citation metadata; class definitions **in the dataset's own words**; an explicit
+mapping to project classes; label provenance and any stated noise; modalities
+with bands, polarisations and processing level; the preprocessing it was
+produced with; and its train/validation/test separation.
+
+Still outstanding: Kuro Siwo's flood definition and stated label noise (paper
+Supplemental Material), Sen1Floods11's weak-label encodings and exact test
+split, and a confirmation of Kuro Siwo's linear-vs-dB representation from a
+delivered raster rather than from its SNAP graph.
 
 ### 5.6 Train / validation / test separation
 
@@ -819,11 +884,21 @@ datasets before it is used**, and applies to both equally.
   (`configs/evaluation.yaml → splits.forbid_random_pixel_split: true`) because
   neighbouring pixels are strongly spatially correlated and such a split leaks
   across splits and inflates scores.
+- **REQUIRED — and now actionable:** both datasets ship official event-based
+  splits, and they must be honoured. Kuro Siwo's upstream **test** activations
+  (`321, 561, 445, 562, 411, 1111002, 277, 1111007, 205, 1111013`) must not
+  enter our training or validation split. See
+  `docs/evaluation-protocol.md` §2.4.
 - **REQUIRED:** the unseen-Himalaya evaluation scenes are disjoint from training
   and validation, and are used **once**, after tuning is frozen
   (`AGENTS.md` §5).
-- **REQUIRED:** if the dataset ships an official split, state whether we use it
-  and why.
+
+> **Material finding.** Neither corpus is documented as containing Himalayan or
+> high-mountain terrain. Kuro Siwo's only Nepal-labelled activation is tropical
+> and lowland by its own metadata *and* sits in the upstream test split. This
+> means there is **no labelled Himalayan test set inside the permitted data**,
+> so the unseen-Himalaya requirement cannot be met with permitted labels. See
+> `docs/dataset-registry.md` §5.3 and `docs/evaluation-protocol.md` §2.6.
 
 See `docs/evaluation-protocol.md` for the full protocol and
 `docs/dataset-registry.md` for the registry these entries populate.

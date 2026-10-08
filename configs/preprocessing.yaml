@@ -1,7 +1,16 @@
 # =============================================================================
 # configs/preprocessing.yaml — analysis-ready input generation
 #
-# STATUS: structural placeholder. Unverified values are `null` with a TODO.
+# STATUS: the target grid, resampling policy and speckle policy are FROZEN
+# (C1-C4, 2026-10-08; see configs/data.yaml -> m4_contract and
+# docs/m4-architecture-decision.md §10). Everything that can only be read from
+# a delivered product remains `null` with a TODO.
+#
+# Every block in this file is now validated by
+# src/floodmap/preprocessing/config.py with pydantic `extra="forbid"`. Before
+# 2026-10-08 several blocks — including `target_grid.resampling` and
+# `sentinel1.steps` — were parsed into `__pydantic_extra__` and discarded, so a
+# misspelled key was accepted silently.
 #
 # AGENTS.md §7: do not assume rasters are aligned. CRS, transform, resolution,
 # extent, pixel alignment and acquisition geometry must be verified before any
@@ -14,22 +23,62 @@ version: 0.1.0
 # Target analysis grid
 #
 # Every modality is brought onto one grid so that pixel-level comparison is
-# meaningful. These values are deliberately unset: the correct target CRS and
-# resolution depend on the AOI and on the native resolutions of the chosen
-# products, none of which are verified yet.
+# meaningful.
+#
+# C1/C2/C3 FROZEN 2026-10-08 (configs/data.yaml -> m4_contract,
+# docs/m4-architecture-decision.md §10). What was frozen is the CRS RULE, the
+# target resolution and the per-type resampling methods. What remains null is
+# the grid INSTANCE — transform, width, height and the concrete EPSG code — all
+# of which need the AOI geometry that `data.yaml -> aoi` deliberately does not
+# define. A rule plus a resolution is a decision; a transform without an AOI
+# would be an invention.
 # -----------------------------------------------------------------------------
 target_grid:
-  crs: null                 # TODO(verify): a local projected CRS is expected for
-                            # area/length computation; the specific EPSG code must be
-                            # chosen for the AOI rather than assumed.
-  resolution_m: null        # TODO(verify)
+  # The concrete EPSG code is derived per run from `crs_rule`, so it stays null
+  # until an AOI exists. It is NOT unresolved in the sense of undecided.
+  crs: null
+  crs_family: "WGS 84 / UTM"
+  crs_units: "metre"
+  crs_rule: "UTM zone and hemisphere derived from the AOI centroid"
+  crs_is_target_not_source: true
+  # Why not one global projected CRS: the training corpus spans ~-18 to +60
+  # degrees latitude across all longitudes, and no single projected CRS holds
+  # metre fidelity over that extent. Inside a UTM zone the scale error is under
+  # ~0.1%, which is what makes areas, lengths and the slope kernel meaningful.
+  # Inheriting the source EPSG:3857 instead would preserve the very defect
+  # recorded against it: metre-labelled, not metre-true.
+  forbid_geographic_crs: true
+  # C2 — TARGET resolution. This is the native ground resolution of no dataset
+  # in this project. Chosen as 10 m because the production Sentinel-1 IW GRDH
+  # inference source is natively 10 m (so the served path needs no resampling)
+  # and every measured Kuro Siwo true spacing is finer than 10 m (8.736-9.798
+  # m), so the training path is coarsened rather than interpolated up.
+  resolution_m: 10
+  resolution_is_native_for_any_source: false
   transform: null           # REQUIRED for a production run; six affine coefficients
   width: null               # REQUIRED for a production run
   height: null              # REQUIRED for a production run
-  # Resampling must never be silent (AGENTS.md §7).
+  # C3 — resampling must never be silent (AGENTS.md §7) and must never be one
+  # method for everything. Bilinear on a class label invents classes that were
+  # never in the source: a 0/2 boundary interpolates to 1, which is
+  # "Permanent Waters". Nearest on continuous backscatter discards the
+  # averaging that makes a coarsened pixel physically meaningful.
+  #
+  # The keys are deliberately TYPE-SPECIFIC with no generic `continuous` or
+  # `categorical` fallback. A fallback key is what lets a new raster type be
+  # resampled by whatever happened to be nearest in the file.
   resampling:
-    continuous: null        # TODO: e.g. bilinear/cubic for backscatter, reflectance
-    categorical: null       # TODO: e.g. nearest for masks and class labels
+    continuous_sar: "bilinear"
+    continuous_optical: "bilinear"
+    categorical_label: "nearest"
+    binary_validity_mask: "nearest"
+    dem: "bilinear"               # declared; DEM is excluded from the M4 baseline
+    # Binding condition: SAR is resampled in LINEAR POWER, before any dB
+    # conversion. Averaging decibels averages logarithms, which is not the mean
+    # of the underlying power and is biased low.
+    sar_domain: "linear_power"
+    sar_resample_before_db_conversion: true
+    forbid_generic_method: true
     document_reason: true
 
 # -----------------------------------------------------------------------------
@@ -54,14 +103,67 @@ sentinel1:
   # actually used. Enable a step only once it is implemented and documented;
   # a flag set true here with no implementation behind it would be a false
   # claim about the pipeline.
+  #
+  # SCHEMA NOTE — this block used to be invisible. Until 2026-10-08 `steps`
+  # was not modelled by `Sentinel1Config` and the model carried
+  # pydantic `extra="allow"`, so every key below parsed into
+  # `__pydantic_extra__` and was discarded. Setting `speckle_filter` here was a
+  # SILENT NO-OP, and a typo such as `speckle_fliter` was accepted without
+  # complaint. `steps` is now modelled with `extra="forbid"` in
+  # src/floodmap/preprocessing/config.py, so an unknown key in this block
+  # fails loudly. Measured before the fix, not assumed.
   steps:
     apply_orbit_file: null
     thermal_noise_removal: null
     radiometric_calibration: null
-    speckle_filter: null
+    # C4 FROZEN — see the `speckle` block below for the decision and its
+    # reasoning. This flag is the executable form of it.
+    speckle_filter: false
     speckle_filter_params: null
     terrain_correction: null
     convert_to_db: null
+  # ---------------------------------------------------------------------------
+  # C4 — SPECKLE POLICY. FROZEN 2026-10-08.
+  #
+  # Our pipeline applies NO speckle filter, on any path. Parity is NOT claimed.
+  #
+  # The reason parity is impossible rather than merely unimplemented: Kuro Siwo
+  # is delivered already Lee Sigma filtered by its authors and cannot be
+  # un-filtered. Filtering our side to "match" would double-filter the training
+  # corpus; filtering nothing leaves a genuine train/serve texture difference,
+  # because a CNN reads texture and speckle is texture. No setting makes the
+  # two paths identical, so the choice is the uniform and honest one — apply
+  # nothing everywhere — and the residual mismatch is disclosed and must be
+  # quantified by ablation before any claim about transfer.
+  # ---------------------------------------------------------------------------
+  speckle:
+    applied_by_our_pipeline: false
+    filter_family: null
+    window: null
+    target_window: null
+    sigma: null
+    pipeline_site: null
+    parity_established: false
+    parity_possible: false
+    source_state_kuro_siwo: "Lee Sigma, 7x7 window, 3x3 target, sigma 0.9 (upstream)"
+    source_state_sen1floods11: "none"
+    source_state_production: "none"
+    mismatch_disclosed: true
+    ablation_required_before_transfer_claim: true
+  # ---------------------------------------------------------------------------
+  # C10 — the 0.15 linear / -8.2391 dB clip. The authoritative site is the
+  # training-dataset adapter (configs/data.yaml -> m4_contract.clip); the
+  # production path must apply the same bound at the equivalent point, after
+  # radiometric calibration and before the linear-to-dB conversion, so the two
+  # paths see the same distribution. Not yet wired, and recorded as such rather
+  # than flagged true against an unimplemented step.
+  # ---------------------------------------------------------------------------
+  clip:
+    enabled: null                 # PENDING(M2 wiring) — contract fixed in m4_contract.clip
+    domain: "linear_sigma0"
+    max_linear: 0.15
+    site: "after radiometric calibration, before linear-to-dB"
+    must_match_training_adapter: true
   nodata_value: null        # TODO(verify)
   required_polarizations: null  # Must be read from the selected product/config.
   radiometric_calibration: null # source_calibrated | linear_to_db; unresolved.

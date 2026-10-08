@@ -124,3 +124,19 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# ---------------------------------------------------------------------------
+# Shell accidents
+#
+# A mistyped `source ~/.zshrc` (or similar) creates a directory literally named
+# "source " — note the trailing space — containing whatever the rest of the
+# command resolved to. One such accident deposited a 684 MB copy of an SDK at
+# the repository root. It is not gitignored by any rule above, so a single
+# `git add -A` would stage it.
+#
+# This entry is a guard, not a fix: if the directory exists, delete it. The
+# trailing space is backslash-escaped because Git discards unescaped trailing
+# whitespace in a pattern — a quoted form such as `"source "/` does not work and
+# silently matches nothing. Verified with `git check-ignore -v`.
+# ---------------------------------------------------------------------------
+source\ /

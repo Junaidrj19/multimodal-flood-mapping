@@ -19,17 +19,62 @@ version: 0.1.0
 # -----------------------------------------------------------------------------
 # Classes
 #
-# UNKNOWN (blocking): the class set is dictated by the permitted training
-# datasets' labels, which are not enumerated anywhere in this repository.
-# PRD.md FR-06 says the prediction must cover "flood/debris classes supported by
-# the training labels" — so this cannot be defined before the dataset registry
-# is resolved. See docs/dataset-registry.md.
+# FROZEN 2026-10-08. The class set is Kuro Siwo's native 3-class scheme, which
+# is the primary supervised corpus (configs/data.yaml -> m4_contract.baseline).
+#
+# THE DISTINCTION THAT MATTERS HERE, because this repository got it wrong twice
+# in opposite directions:
+#   - the SEMANTIC classes are {0, 1, 2}. 3 is NOT a fourth class, and treating
+#     it as one would train a phantom category;
+#   - the STORED label values are {0, 1, 2, 3}, and 3 is an in-band NODATA
+#     sentinel occupying 6.48% of label pixels. Treating it as absent would
+#     feed an undeclared value into a fixed-width softmax.
+# `ignore_index: 3` is the narrow truth in between. It is an INPUT-side
+# concern — the value to exclude from loss and metrics — and is deliberately
+# NOT the same number as the output nodata below.
 # -----------------------------------------------------------------------------
 classes:
-  names: []
-  # Mapping from dataset label values to our class indices, once known.
-  label_mapping: {}
-  ignore_index: null
+  names:
+    - "No water"            # 0
+    - "Permanent Waters"    # 1
+    - "Floods"              # 2
+  semantic_values: [0, 1, 2]
+  # Identity for Kuro Siwo: its native values already are our class indices.
+  # Stated explicitly rather than left implicit, so a future corpus with a
+  # different encoding has somewhere to declare it.
+  label_mapping:
+    0: 0
+    1: 1
+    2: 2
+  ignore_index: 3
+  ignore_index_is_the_input_label_sentinel: true
+  ignore_index_is_a_semantic_class: false
+  source_corpus: "kuro_siwo"
+
+# -----------------------------------------------------------------------------
+# Output nodata — C9, FROZEN 2026-10-08
+#
+# Semantic class IDs and "no information here" are different kinds of thing and
+# get different encodings. A class ID reused as nodata makes every downstream
+# count ambiguous: a pixel labelled 0 could mean "we observed dry ground" or
+# "we had nothing to say", and no consumer could tell them apart.
+#
+# 255 is chosen for the class mask because it cannot collide with {0,1,2} nor
+# with the upstream input sentinel 3 in a uint8 raster. The input sentinel is
+# deliberately NOT reused as the output sentinel, so a raster's provenance
+# stays readable from its values.
+#
+# -9999.0 is outside the legitimate range of every continuous output: decibel
+# backscatter, decibel change and a probability in [0, 1].
+# -----------------------------------------------------------------------------
+output:
+  class_mask_dtype: "uint8"
+  class_mask_nodata: 255
+  probability_dtype: "float32"
+  probability_nodata: -9999.0
+  forbid_semantic_class_id_as_nodata: true
+  distinct_from_input_label_sentinel: true
+  input_label_sentinel: 3
 
 # -----------------------------------------------------------------------------
 # Model — intentionally unselected
@@ -39,7 +84,10 @@ model:
   encoder: null
   pretrained_weights: null
   in_channels: null         # follows from the feature stack, once defined
-  num_classes: null         # follows from `classes.names`, once known
+  # Derived from the frozen semantic class set {0,1,2}, not a model choice.
+  # Note it is 3 because there are three SEMANTIC classes; the label nodata
+  # sentinel 3 is excluded via `classes.ignore_index` and gets no logit.
+  num_classes: 3
   # Candidate architectures to compare experimentally. Empty on purpose: listing
   # candidates now would imply an evaluation that has not happened.
   candidates: []
@@ -57,10 +105,38 @@ features:
   # Normalisation statistics must be computed on TRAINING data only and reused
   # unchanged at inference; computing them over the evaluation scene would be
   # test-time leakage.
+  #
+  # C5 FROZEN 2026-10-08 — the ARTIFACT SCHEMA, not the method and not the
+  # values. `method` stays null because normalisation is deliberately NOT part
+  # of the frozen contract, and `statistics_path` stays null because NO FITTED
+  # STATISTICS EXIST. Inventing either would be the exact failure this freeze
+  # is meant to prevent.
+  #
+  # Three KINDS of statistics exist and must never be conflated:
+  #   reference  - published upstream values. Tolerance-banded cross-check only,
+  #                and explicitly NOT usable as our fitted parameters: their
+  #                pre/post, split and aggregation bases are all unstated.
+  #   fitted     - OUR parameters, from the training split only.
+  #   validation - measured on validation data for DRIFT REPORTING only.
+  #
+  # The layout is a SIDECAR PAIR rather than one wrapped file, and that is
+  # forced rather than chosen: floodmap.features.pipeline coerces float() over
+  # every value of every top-level key in the values file, so an embedded
+  # provenance block would raise there. It also matches the repository's
+  # existing `*_provenance.yaml` convention.
   normalisation:
     method: null
     statistics_source: "training_split_only"
     statistics_path: null
+    statistics_schema_id: "floodmap.statistics/1"
+    statistics_schema_version: "1.0.0"
+    statistics_layout: "sidecar_pair"
+    statistics_values_file: "statistics.json"
+    statistics_provenance_file: "statistics_meta.json"
+    statistics_kinds: ["reference", "fitted", "validation"]
+    fitted_statistics_exist: false
+    reference_statistics_usable_as_fitted_parameters: false
+    is_part_of_frozen_contract: false
 
 # -----------------------------------------------------------------------------
 # Training
@@ -77,14 +153,26 @@ training:
   augmentation: []
   early_stopping:
     enabled: null
-    monitor: null           # must be a validation metric, never the Himalaya holdout
+    # C6 — must be a validation metric, never the Himalaya holdout and never
+    # the external-validation corpus.
+    monitor: "val_iou_flood_class"
     patience: null
   # Checkpoint selection monitors VALIDATION only. Selecting on the unseen
   # Himalayan set would convert it into a tuning set and void the evaluation
   # (AGENTS.md §5, docs/evaluation-protocol.md).
+  #
+  # C6 FROZEN: the criterion is flood-class IoU, for the reason given in
+  # configs/evaluation.yaml -> threshold_selection. Selecting on a macro
+  # average over the two easy classes could improve while flood IoU degrades.
+  # The criterion is frozen; running it is still blocked on validation data —
+  # one activation (19 tiles) cannot support checkpoint selection.
   checkpoint:
-    monitor: null
-    mode: null
+    monitor: "val_iou_flood_class"
+    mode: "max"
+    selection_split: "validation"
+    forbid_selection_on_external_validation: true
+    forbid_selection_on_test: true
+    blocked_on_validation_data: true
     save_dir: "models"
 
 # -----------------------------------------------------------------------------

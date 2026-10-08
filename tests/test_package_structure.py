@@ -75,6 +75,7 @@ class TestRepositoryLayout:
             "docs/dataset-registry.md",
             "docs/scientific-assumptions.md",
             "docs/evaluation-protocol.md",
+            "docs/m4-architecture-decision.md",
         ):
             assert (REPO_ROOT / name).is_file(), f"missing document: {name}"
 

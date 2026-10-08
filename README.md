@@ -312,7 +312,8 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 │   ├── data-contract.md          # expected interface per data source
 │   ├── dataset-registry.md       # permitted vs validation-only datasets
 │   ├── scientific-assumptions.md # what the evidence does and does not support
-│   └── evaluation-protocol.md    # splits, metrics, leakage prevention
+│   ├── evaluation-protocol.md    # splits, metrics, leakage prevention
+│   └── m4-architecture-decision.md # audited datasets -> segmentation design
 ├── data/                         # contents git-ignored (AGENTS.md §15)
 │   ├── raw/                      (empty)
 │   ├── interim/                  (empty)
@@ -405,7 +406,8 @@ Current phase: **Milestone 3 complete — Earth Observation feature generation.*
 |---|---|
 | Repository scaffold, build config, data-exclusion rules | **Done** |
 | `docs/data-contract.md` — per-source expected interface | **Done** (with TODO/UNKNOWN markers) |
-| `docs/dataset-registry.md` — permitted vs validation-only | **Done** (no row VERIFIED; no data acquired) |
+| `docs/dataset-registry.md` — permitted vs validation-only | **Done** · training corpora **audited against primary sources**; no data acquired |
+| `docs/m4-architecture-decision.md` — segmentation design | **Done** (decided, not implemented) |
 | `docs/scientific-assumptions.md` | **Done** |
 | `docs/evaluation-protocol.md` | **Done** (no metric targets, no model chosen) |
 | `configs/*.yaml` — machine-readable configuration | **Done** (structural placeholders) |
@@ -465,17 +467,29 @@ defaults: `configs/features.yaml` leaves `polarisation_roles`,
 `terrain.elevation_unit` and `numerics.output_nodata` null, and a production
 run fails on them.
 
-Two scientific unknowns matter more than the rest, and neither is resolvable by
-reading the specification:
+### Resolved by the training-dataset audit
 
-1.  **Whether Kuro Siwo labels debris/sediment separately from water.** Track B
-    asks for flood *and* debris. If the permitted labels do not distinguish
-    them, the debris class has no training signal and the product claim narrows
-    to flood water. See `docs/scientific-assumptions.md` §9.
-2.  **How Kuro Siwo and Sen1Floods11 label definitions reconcile**, if both are
-    used. Two corpora can disagree about what counts as water at a boundary.
+Both permitted corpora have now been audited against their own repositories,
+LICENSE files and papers (`docs/dataset-registry.md` §1.5). Four findings
+changed the plan:
 
-See `docs/dataset-registry.md` §5 for the full list.
+| Finding | Consequence |
+|---|---|
+| **Neither corpus labels debris or sediment.** Kuro Siwo is `{No water, Permanent Waters, Floods, Invalid}`; Sen1Floods11 is `{No Data, Not Water, Water}`. | **The product claim narrows from "flood/debris" to flood water.** Supervised debris segmentation is impossible within the closed permitted list. |
+| **Kuro Siwo separates permanent water from flood water.** | This is what stops the Trishuli river being reported as flood on every run — the main reason the required corpus is usable here. |
+| **The two corpora disagree on SAR representation** (Kuro Siwo linear σ⁰, Sen1Floods11 dB) and on speckle filtering, and Sen1Floods11 has **no pre-event image**. | A naive union is forbidden. The M3 per-corpus representation gate becomes load-bearing, and change features cannot be supervised by Sen1Floods11 at all. |
+| **Neither corpus is documented as containing Himalayan terrain.** Kuro Siwo's only Nepal-labelled activation is tropical, lowland and in its *upstream test* split. | There is **no labelled Himalayan test set** in the permitted data. The unseen-Himalaya requirement splits into a labelled proxy plus an unlabelled EMSR927 agreement, reported separately. |
+
+Licensing is **worse than the specification implies** and is recorded
+conservatively rather than asserted: Kuro Siwo's `LICENSE` says MIT while its
+README says CC BY, and **Sen1Floods11 has no licence file at all**. Neither may
+be redistributed from this repository.
+
+The resulting segmentation design is recorded in
+`docs/m4-architecture-decision.md`: a **SAR-learned core** with Sentinel-2 and
+DEM as deterministic downstream evidence rather than unsupervised model inputs.
+
+See `docs/dataset-registry.md` §5 for the remaining blockers.
 
 ### Progress order
 

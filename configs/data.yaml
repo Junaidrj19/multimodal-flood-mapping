@@ -192,23 +192,1306 @@ production:
     # Per-dataset detail. `role` is from the specification; `license` and
     # `citation` are required by AGENTS.md §18 ("Training datasets must be
     # cited according to their respective licenses and papers").
+    #
+    # VERIFIED(source) values below were read from the datasets' own primary
+    # sources — repository files, LICENSE files and the published papers — not
+    # from the challenge specification and not from recollection. The audit and
+    # its source URLs are in docs/dataset-registry.md §1.5.
+    # Properties that still require opening a delivered label raster or the
+    # paper supplement remain TODO(verify).
     datasets:
       - id: "kuro_siwo"
         name: "Kuro Siwo"
+        # ROLE — FROZEN. Kuro Siwo is the PRIMARY supervised training corpus:
+        # it is the only permitted dataset with pre-event imagery, a
+        # permanent-water class and multiclass flood labels.
         role: "production_training_input"
+        primary_supervised_corpus: true
         required: true
-        # TODO(verify): the spec records "MIT / CC BY". Confirm which applies to
-        # the code and which to the data before redistributing either.
-        license: "MIT / CC BY"
+        # LICENSE DISCREPANCY — UNRESOLVED. Do not collapse to one identifier.
+        #   repository LICENSE file : MIT (Copyright (c) 2024 Orion Lab)
+        #   repository README       : "The Kuro Siwo dataset is released under
+        #                              the CC BY license" (no version given)
+        #   paper body              : "Kuro Siwo is released under the MIT License"
+        #   challenge specification : "MIT"
+        # Conservative reading: treat the CODE as MIT and the DATA as CC BY
+        # (attribution required), because CC BY is the more restrictive of the
+        # two for data reuse. Attribution is required under either reading, so
+        # requiring it is safe; assuming MIT for the data would not be.
+        license_declared:
+          repository_license_file: "MIT"
+          repository_readme: "CC BY (version unstated)"
+          paper_body: "MIT"
+          challenge_specification: "MIT"
+        license_conservative: "CC BY (data) + MIT (code) — attribution required"
+        license_status: "DISCREPANCY(unresolved)"
+        redistribution_permitted: null   # Do NOT commit samples until resolved.
         citation: "Bountos et al., 2024 (NeurIPS 2024)"
-        path: null      # TODO: populate when the dataset is actually acquired
+        citation_doi: "10.52202/079017-1204"
+        # VERIFIED(source) — primary sources, see docs/dataset-registry.md §1.5.1
+        sensors: ["sentinel-1"]
+        bundled_dem: "SRTM 1Sec"        # NOT Copernicus WorldDEM-30; see §1.5.3
+        optical: false
+        polarisations: ["VV", "VH"]
+        product_levels: ["GRD", "SLC"]
+        tile_size_px: 224
+        crs: "EPSG:3857"
+        # ---------------------------------------------------------------------
+        # GEOMETRY — CORRECTED 2026-10-08 from the delivered dataset.
+        #
+        # An earlier revision recorded `resolution_m: 10` as if the corpus were
+        # delivered at 10 metre ground sampling. It is not. Every inspected
+        # raster (200 sampled, zero variation) carries an EPSG:3857 geotransform
+        # of exactly 10.0 x -10.0 PROJECTED UNITS. Web Mercator's scale factor
+        # is 1/cos(lat), so 10 projected units is 10 m of ground ONLY at the
+        # equator. SNAP wrote nominal projected units and did not compensate
+        # for local scale.
+        #
+        # Keeping a bare `resolution_m: 10` would have told the adapter that a
+        # Kuro Siwo pixel and a 10 m UTM inference pixel are the same size.
+        # They are not, and the error grows with latitude.
+        # ---------------------------------------------------------------------
+        source_crs: "EPSG:3857"
+        source_pixel_spacing_projected_units: 10
+        source_pixel_spacing_is_true_ground_metres: false
+        true_ground_spacing_m:
+          status: "PER_ACTIVATION — not a corpus constant"
+          derivation: "10 * cos(centre_latitude); centre latitude from info.json geom"
+          # VERIFIED(delivered data) — measured, not inferred.
+          measured:
+            1111003: 9.798
+            1111002: 9.773
+            1111006: 9.592
+            1111005: 9.531
+            1111004: 8.736
+          measured_range_m: [8.736, 9.798]
+          unmeasured_activations: 40   # 45 catalogued, 5 delivered locally
+          note: >-
+            Nothing in this corpus is 10 m true ground. The full corpus reaches
+            ~60N, where 10 projected units is ~5 m of ground. The adapter must
+            resample per activation from its own measured spacing to the
+            canonical grid; it must not assume a single source GSD.
+        # VERIFIED from four independent lines of evidence. No sentence in the
+        # paper states the scale in words, but the numeric evidence is decisive:
+        #   1. configs/grd_preprocessing.xml: Calibration sets
+        #      outputImageScaleInDb=false, outputSigmaBand=true, and the graph
+        #      contains no LinearToFromdB node.
+        #   2. configs/train/data_config.json publishes per-channel statistics
+        #      data_mean [VV, VH] = [0.0953, 0.0264] and
+        #      data_std  [VV, VH] = [0.0427, 0.0215].
+        #      Decibel VV backscatter would sit near -10 to -15, not +0.095.
+        #   3. Supplemental Material §5: "All SAR images were clipped at a max
+        #      value of 0.15 and normalized to 0 mean and 1 standard deviation."
+        #      A 0.15 ceiling is meaningful for linear power and nonsensical for
+        #      dB. The loader clamps with min=0.0, which would delete dB data.
+        #   4. The default scale_input is "normalize" (plain z-score); the
+        #      optional "custom" path applies torch.log TO the stored values,
+        #      which is only coherent if they are linear.
+        backscatter_representation: "linear"
+        backscatter_representation_status: "VERIFIED(delivered data; confirmed 2026-10-08)"
+        # Upgraded from VERIFIED(numeric evidence) to VERIFIED(delivered data).
+        # The delivered MS1/SL1/SL2 IVV and IVH rasters are float32, strictly
+        # non-negative, nodata 0.0, with values of order 0.1 and an observed
+        # maximum of 901.92. Decibel backscatter would be negative and centred
+        # near -10 to -15. The four inferential lines above are now confirmed
+        # directly against the product.
+        #
+        # DELIVERY IS NOT PRE-CLIPPED. Observed VV max is 901.92, far above the
+        # 0.15 ceiling. The upstream 0.15 clamp is a LOADER-time operation, not
+        # a property baked into the stored raster. Our pipeline must therefore
+        # apply it explicitly; assuming it was already applied would train on a
+        # distribution six thousand times wider than intended.
+        delivered_is_pre_clipped: false
+        observed_max_linear: {vv: 901.92, vh: 28.794}
+        clip_0_15_is_explicit_adapter_operation: true
+        # ---------------------------------------------------------------------
+        # REFERENCE STATISTICS — NOT a per-raster acceptance gate.
+        #
+        # An earlier revision said "a delivered raster whose distribution does
+        # not match these is not what we think it is". That is too strong and
+        # would fail on correct data: measured over 150 delivered MS1 tiles from
+        # 3 of 27 train activations (post-event epoch only, valid pixels only,
+        # clipped at 0.15) the subset gives VV mean 0.1180 / VH mean 0.0373 and
+        # VV std 0.0382 / VH std 0.0202. Standard deviations agree to ~10%;
+        # means are 24-41% high. That is the expected behaviour of a small,
+        # geographically skewed subset -- 1111004 alone is 71% of available
+        # train tiles -- not evidence of a wrong product.
+        #
+        # These values are a REFERENCE for a tolerance-banded cross-check over
+        # the full training split once enough activations are present. They are
+        # NOT our normalisation parameters: their pre/post basis, train/all-data
+        # basis and per-pixel/per-scene basis are all UNSTATED upstream.
+        # ---------------------------------------------------------------------
+        reference_statistics:
+          source: "upstream configs/train/data_config.json"
+          domain: "linear sigma-nought, clipped at 0.15"
+          data_mean: {vv: 0.0953, vh: 0.0264}
+          data_std: {vv: 0.0427, vh: 0.0215}
+          clamp_max: 0.15
+          default_scaling: "normalize (z-score), no log transform"
+          cross_check_policy: "tolerance_banded_over_full_training_split"
+          cross_check_is_per_raster_equality_gate: false
+          usable_as_fitted_normalisation_parameters: false
+          basis_pre_or_post: "UNSTATED"
+          basis_split: "UNSTATED"
+          basis_aggregation: "UNSTATED"
+          measured_subset_2026_10_08:
+            scope: "150 MS1 tiles, 3 of 27 train activations, post-event only"
+            clipped_mean: {vv: 0.1180, vh: 0.0373}
+            clipped_std: {vv: 0.0382, vh: 0.0202}
+        # Fitted statistics are produced by the adapter from its own training
+        # split only (AGENTS.md §5). TODO(decide): artifact schema and version.
+        fitted_statistics_source: "adapter_training_split_only"
+        temporal_structure: "triplet: 2 pre-event + 1 post-event"
+        # ---------------------------------------------------------------------
+        # TEMPORAL ROLES — machine-readable, never inferred from filenames.
+        # VERIFIED(delivered data): info.json carries a `sources` map keyed
+        # SL1 / SL2 / MS1, each with `master` (bool) and `crank` (rank).
+        #   MS1: master=true  -> POST-event
+        #   SL1: master=false, crank=1 -> pre-event, nearest
+        #   SL2: master=false, crank=2 -> pre-event, earlier
+        # The adapter must read these fields, not parse the filename prefix.
+        # ---------------------------------------------------------------------
+        temporal_role_source: "info.json sources.*.master and sources.*.crank"
+        temporal_roles:
+          post: "MS1 (sources.MS1.master == true)"
+          pre_rank_1: "SL1 (crank == 1)"
+          pre_rank_2: "SL2 (crank == 2)"
+        baseline_pre_selection: "SL1"
+        baseline_dropped_epoch: "SL2"
+        baseline_dropped_must_be_recorded: true   # never silently ignored
+        # ---------------------------------------------------------------------
+        # PARTITION CONTRACT — CORRECTED 2026-10-08 from the delivered dataset.
+        #
+        # The corpus ships TWO partitions per activation and they do not carry
+        # the same content:
+        #
+        #   01  LABELLED.   Flat uuid-hex dirs. 10 tif + info.json. Has
+        #       MK0_MLU (label), MK0_MNA, MK0_DEM, MK0_SLOPE, MS1/SL1/SL2.
+        #       info.json aoiid = 1, pwater/pflood numeric.
+        #   00  UNLABELLED. Two-level <2-hex-prefix>/<uuid> dirs. 7 tif +
+        #       info.json. NO MK0_MLU AT ALL, no DEM, no slope. Filename AOI
+        #       component is "_NA_". info.json aoiid = None, pwater/pflood None.
+        #
+        # An adapter that globs */*/*/info.json and assumes labelled samples
+        # would ingest label-free tiles from 00. This was not previously
+        # recorded anywhere in the contract.
+        # ---------------------------------------------------------------------
+        partition_contract:
+          required_for_supervised_training: "LABELLED_01"
+          rejected_for_supervised_training: "UNLABELLED_00"
+          rejection_reason: "partition 00 contains no MK0_MLU label raster"
+          partition_01_discriminators: {aoiid: 1, filename_aoi_component: "01"}
+          partition_00_discriminators: {aoiid: null, filename_aoi_component: "NA"}
+          must_not_glob_all_info_json: true
+        # ---------------------------------------------------------------------
+        # CATALOGUE CONTRACT — catalogue.gkpg (note: upstream misspells .gpkg).
+        # Single table `catalogue`, SOURCE-level not tile-level: 3 rows per
+        # grid_id (one each for MS1/SL1/SL2). VERIFIED(delivered data):
+        # (rows where exported=1) / 3 == on-disk grid count, exactly, for all
+        # five delivered activations. The catalogue therefore enumerates MORE
+        # grids than exist on disk and is not an inventory.
+        # ---------------------------------------------------------------------
+        catalogue_contract:
+          filename: "catalogue.gkpg"
+          granularity: "source_level (3 rows per grid_id)"
+          required_state: "exported == 1"
+          rejected_state: "exported == 0"
+          exported_1_iff_on_disk: true          # VERIFIED, all 5 activations
+          rows_per_grid: 3
+        # ---------------------------------------------------------------------
+        # LABELS — CORRECTED 2026-10-08. READ THIS BEFORE WRITING AN ADAPTER.
+        #
+        # The semantic classes are {0, 1, 2}. That part was right, and 3 is NOT
+        # a fourth semantic class -- that invariant must be preserved.
+        #
+        # But the previous revision went one step too far and declared the
+        # STORED values exhaustive at {0,1,2}. The delivered raster disproves
+        # it: MK0_MLU stores {0, 1, 2, 3}, value 3 occupies 6.48% of all label
+        # pixels (195,003 of 3,010,560 over a 60-tile census), and info.json
+        # declares `MK0_MLU.nodata = 3` explicitly.
+        #
+        # So 3 is a real in-band NODATA SENTINEL. Both readings were wrong in
+        # opposite directions:
+        #   - treating 3 as a class would train a phantom category;
+        #   - treating 3 as absent would feed an undeclared value into the
+        #     label tensor and corrupt any fixed-width softmax.
+        #
+        # Correct contract: semantic {0,1,2}, stored {0,1,2,3}, nodata 3,
+        # and 3 must be excluded by the label-valid mask.
+        # ---------------------------------------------------------------------
+        label_classes:            # SEMANTIC classes only. 3 is not here.
+          0: "No water"
+          1: "Permanent Waters"
+          2: "Floods"
+        label_semantic_values: [0, 1, 2]
+        label_stored_values: [0, 1, 2, 3]
+        label_nodata_value: 3
+        label_values_are_exhaustive: false   # CORRECTED: stored set includes 3
+        label_nodata_is_a_semantic_class: false
+        label_nodata_observed_pixel_fraction: 0.0648
+        # ---------------------------------------------------------------------
+        # VALIDITY — REDUNDANT, not mutually exclusive.
+        #
+        # The previous revision recorded validity as "separate_binary_raster
+        # # NOT a label value". The delivered data shows it is BOTH, and also a
+        # third time in the SAR band. Over a 120-tile pairwise census:
+        #
+        #   MLU==3 AND MNA==0 : 377,715
+        #   MLU==3 BUT MNA==1 :       0      <- zero disagreement
+        #   MNA==0 BUT MLU!=3 :       0      <- zero disagreement
+        #
+        # and separately zeros_in_SAR == (MNA==0) exactly, tile for tile.
+        #
+        # So MLU==3 <=> MNA==0 <=> SAR==0.0. This redundancy is an asset: it
+        # gives three independent integrity checks on a delivered tile. It is
+        # recorded rather than collapsed to one mechanism.
+        # ---------------------------------------------------------------------
+        validity_mechanisms:
+          - "separate_binary_raster"    # MK0_MNA, 0=invalid 1=valid
+          - "label_nodata_sentinel"     # MK0_MLU == 3
+          - "sar_nodata_zero"           # MS1/SL1/SL2 == 0.0
+        validity_mechanisms_are_redundant: true
+        validity_canonical_source: "MK0_MNA == 1"
+        validity_semantics: "MK0_MNA: 0=invalid, 1=valid"
+        validity_integrity_assertions:
+          - "MK0_MLU == 3  <=>  MK0_MNA == 0"
+          - "SAR == 0.0    <=>  MK0_MNA == 0"
+        validity_integrity_verified_on_delivered_data: true
+        # ---------------------------------------------------------------------
+        # BUNDLED TERRAIN RASTERS — EXCLUDED from the M4 SAR-only baseline.
+        #
+        # MK0_SLOPE: NOT a clean degree-valued product. Measured distribution
+        # is radian-like (p50 0.124, p99 0.592) which is nonsense as degrees,
+        # 0.001% of pixels exceed pi/2 which is impossible as radians, and one
+        # sampled tile reached 4344.96. It is neither cleanly degrees nor
+        # cleanly radians and carries unexplained outliers. M3's
+        # `dem_slope_degrees` declares range (0, 90). Consuming MK0_SLOPE would
+        # be a silent unit mismatch plus imported corruption.
+        #
+        # MK0_DEM: present and usable, but it is SRTM 1Sec while production
+        # inference uses Copernicus WorldDEM-30. Feeding it would break
+        # train/inference parity on the terrain branch.
+        #
+        # The baseline is SAR-only (m4-architecture-decision.md §8.9), so both
+        # are simply excluded. If slope is ever needed, recompute from DEM via
+        # numerics.slope_horn_degrees at the PER-ACTIVATION true ground
+        # spacing -- never at a nominal 10.0.
+        # ---------------------------------------------------------------------
+        bundled_slope_present: true
+        bundled_slope_excluded: true
+        bundled_slope_exclusion_reason: >-
+          Not degree-valued; radian-like bulk distribution with impossible
+          outliers (observed max 4344.96, 0.001% of pixels exceed pi/2).
+        bundled_slope_observed_max: 4344.96
+        bundled_dem_present: true
+        bundled_dem_excluded_from_baseline: true
+        bundled_dem_exclusion_reason: >-
+          SRTM 1Sec vs production Copernicus WorldDEM-30; baseline is SAR-only.
+        slope_recompute_policy: >-
+          If ever required, recompute from MK0_DEM with
+          numerics.slope_horn_degrees using the per-activation true ground
+          spacing, not the nominal 10 projected units.
+        separates_permanent_from_flood_water: true
+        has_debris_or_sediment_class: false
+        # DISCLOSURE ONLY — not a data path, not a loader, not an input.
+        # This field records where the UPSTREAM AUTHORS' labels came from. It is
+        # material because it means our training labels inherit Copernicus EMS
+        # interpretation assumptions second-hand, which weakens the claimed
+        # independence of any later EMS-family comparison. Recording it is a
+        # disclosure obligation; acting on it would be a violation. See
+        # docs/dataset-registry.md §1.5.4 and docs/evaluation-protocol.md §7.3.
+        upstream_label_provenance: >-
+          Manual photointerpretation of the preprocessed GRD images by five SAR
+          experts at an annotation scale of 1:1000, initialised from Copernicus
+          EMS shapefiles where available. Each expert annotated one of five
+          partitions and quality-checked another's, supervised by a senior
+          remote-sensing scientist, with group meetings to resolve discrepancies.
+          The upstream authors note that errors in those annotations are
+          apparent, and report agreement with CEMS of only 51% IoU for permanent
+          water and 48% IoU for flood. No EMS product is retrieved, read or
+          referenced by this pipeline; only the authors' finished labels are
+          consumed.
+        split_type: "event_and_geography_based"
+        official_split_activation_ids:
+          test: [321, 561, 445, 562, 411, 1111002, 277, 1111007, 205, 1111013]
+          val: [514, 559, 279, 520, 437, 1111003, 1111008]
+        # GOVERNANCE: activation 1111007 is labelled act_region "Nepal" and sits
+        # in the UPSTREAM TEST split. It must not enter our training or
+        # validation split. Its only AOI is named "Patna" and its climate zone
+        # is tropical, so it is very likely lowland Ganges-plain terrain rather
+        # than Himalayan; treat it as NOT satisfying our unseen-Himalaya
+        # requirement until the AOI geometry is inspected.
+        upstream_test_activations_are_offlimits: true
+        # VERIFIED by reading the repository: the three lists are pairwise
+        # disjoint and together cover 44 activation ids, all of which appear in
+        # catalogue/catalogue.yaml. Two bookkeeping discrepancies, recorded
+        # rather than smoothed over:
+        #   - the catalogue holds 45 activation ids, so exactly one
+        #     (1111012, Australia / Singleton) belongs to NO split and must not
+        #     be used without an explicit decision;
+        #   - the paper says "43 flood events" while the catalogue lists 45 ids,
+        #     so "activation" and "event" are not one-to-one. Any per-event
+        #     count we publish must say which of the two it means.
+        split_verification:
+          train_count: 27
+          val_count: 7
+          test_count: 10
+          union_count: 44
+          pairwise_disjoint: true
+          all_split_ids_present_in_catalogue: true
+          catalogue_activation_id_count: 45
+          activations_in_no_split: [1111012]
+          paper_stated_event_count: 43
+        # ---------------------------------------------------------------------
+        # LOCAL DATA AVAILABILITY — recorded 2026-10-08.
+        #
+        # This is a DATA AVAILABILITY fact, not a contract change. The official
+        # upstream split above remains authoritative and is NOT modified. No
+        # activation is fabricated to fill a gap.
+        #
+        # Only 5 of 45 catalogued activations are present locally:
+        #   1111004 train   5001 labelled tiles
+        #   1111005 train   1369
+        #   1111006 train    682
+        #   1111003 val       19
+        #   1111002 test      32   (upstream test -- off-limits for train/val)
+        #
+        # 1111012 (the no-split activation) is absent, so no exclusion decision
+        # is required for it in practice.
+        #
+        # The validation figure is the blocking one: 19 tiles from a SINGLE
+        # activation cannot support threshold selection, checkpoint selection,
+        # or any defensible generalisation estimate. evaluation.yaml pins
+        # threshold_selection.selection_split: "validation", so that decision
+        # is now blocked on DATA, not only on a criterion choice.
+        #
+        # Train coverage is also heavily skewed: 1111004 alone is 71% of
+        # available train tiles, at latitude 29.1 deg.
+        # ---------------------------------------------------------------------
+        local_availability:
+          inspected_at: "2026-10-08"
+          dataset_path: "/Users/mohammedjunaid/Documents/kuro_siwo"
+          activations_present: [1111002, 1111003, 1111004, 1111005, 1111006]
+          train_activations_present: 3
+          train_activations_total: 27
+          val_activations_present: 1
+          val_activations_total: 7
+          test_activations_present: 1
+          test_activations_total: 10
+          labelled_tiles_train: 7052
+          labelled_tiles_val: 19
+          labelled_tiles_test: 32
+          activation_1111012_present: false
+          train_tile_concentration: "1111004 is 71% of available train tiles"
+          sufficient_for_production_training_run: false
+          sufficient_for_threshold_selection: false
+          status: "PRODUCTION/EVALUATION READINESS BLOCKER"
+          official_split_modified: false
+        # Supplemental Material §4 WAS located and read. It describes the
+        # annotation PROCESS but does not publish the decision RULES: it states
+        # that photointerpretation keys were extracted, without listing them.
+        # So the operational Floods-vs-Permanent-Waters boundary remains
+        # unpublished and our Floods class semantics inherit an undocumented
+        # judgement. Treat this as a permanent limitation, not a pending task.
+        flood_definition: "UNPUBLISHED — process documented, decision keys not released"
+        flood_definition_known:
+          permanent_water_reference: >-
+            NONE. No external water layer (JRC/Pekel or similar) was used. The
+            authors discuss adding a permanent-water layer as FUTURE work and
+            warn a static layer "could potentially impute noise". The
+            distinction was made by expert photointerpretation of the SAR time
+            series alone, which is why it is reproducible only in spirit.
+          includes_wet_soil_or_submerged_vegetation: "UNSTATED"
+          sediment_laden_or_muddy_water: "NOT MENTIONED ANYWHERE"
+          artifact_flagging_criteria: "referenced but not published"
+        # No quantitative inter-annotator agreement (e.g. Cohen's kappa) and no
+        # label-noise estimate are reported. The 51%/48% IoU figures are
+        # agreement with CEMS, which the authors treat as the lower-quality
+        # product — not an agreement measure among their own annotators.
+        stated_label_noise: "NONE REPORTED (no kappa, no noise estimate)"
+        # Per-event imaging geometry is held constant by the authors:
+        # "all three SAR images belong to either the descending or ascending
+        # imaging geometry to prevent variations in layover, foreshortening and
+        # shadow effects". This matches our own same-relative-orbit rule.
+        imaging_geometry_constraint: "single pass direction per event"
+        path: null                 # TODO: populate when actually acquired
+        # ---------------------------------------------------------------------
+        # C11 — this dataset is external to the repository, by policy.
+        #
+        # `redistribution_permitted` stays null on purpose: it records an
+        # UNRESOLVED UPSTREAM FACT (the licence discrepancy above). The key
+        # below records OUR DECISION, which is not conditional on resolving it.
+        # Collapsing the two would lose the distinction between "we do not know"
+        # and "we have decided not to".
+        # ---------------------------------------------------------------------
+        repository_redistribution_allowed: false
+        external_to_repository: true
+        local_delivery_inspected: true
+        # ---------------------------------------------------------------------
+        # C8 — DATASET CAPABILITY MODEL.
+        #
+        # Deliberately NOT a single boolean and NOT a single `validity_form`
+        # Literal. Kuro Siwo encodes validity three ways and Sen1Floods11 one
+        # way, so a one-of enum cannot represent both; `validity_mechanisms` is
+        # a LIST above and is referenced here rather than duplicated.
+        #
+        # Every capability is stated for BOTH corpora, including the ones that
+        # are false. An absent key would be indistinguishable from an unchecked
+        # one, and the whole point of this block is that the adapter can ask
+        # "can this corpus do X?" and get an answer rather than a KeyError.
+        # ---------------------------------------------------------------------
+        capabilities:
+          imagery:
+            sar: true
+            optical: false
+            pre_event: true
+            post_event: true
+            temporal_pair: true
+            change_features: true
+          terrain:
+            # A DEM ships with the corpus, but it is SRTM 1Sec against a
+            # production WorldDEM-30 and the M4 baseline is SAR-only, so the
+            # canonical sample exposes no terrain channel.
+            dem_bundled: true
+            dem_available_to_canonical_sample: false
+            slope_bundled: true
+            slope_trusted: false
+          labels:
+            flood: true
+            permanent_water: true
+            separates_flood_from_permanent_water: true
+            multiclass_segmentation: true
+            # Derivable by collapsing {1,2} -> water, which is how this corpus
+            # could ever be compared against Sen1Floods11. The collapse is
+            # lossy and one-directional: binary cannot be expanded back.
+            binary_segmentation: true
+            nodata:
+              present: true
+              value: 3
+              form: "in_band_positive_sentinel"
+          sar_representation:
+            native: "linear_sigma0"
+            native_is_decibel: false
+            nodata_value: 0.0
+            non_negative: true
+            dtype: "float32"
+            source_speckle_filtered: true
+            source_clipped: false
+          splits:
+            type: "activation_based"
+            authoritative_unit: "activation_id"
+            official_split_is_authoritative: true
+        # ---------------------------------------------------------------------
+        # C13 — KURO SIWO ADAPTER CONTRACT INVARIANTS.
+        #
+        # These are the conditions the M4 adapter MUST enforce. This is the
+        # CONTRACT, not the implementation: no adapter code exists yet, and
+        # these strings are what the adapter will be audited against.
+        # ---------------------------------------------------------------------
+        adapter_invariants:
+          - "1. partition == 01 only; never glob all info.json"
+          - "2. catalogue.exported == 1 is a required filter"
+          - "3. MS1 is the post-event master (sources.MS1.master == true)"
+          - "4. SL1 (crank == 1) is the baseline pre-event epoch"
+          - "5. SL2 is never silently substituted for SL1"
+          - "6. stored label values are {0,1,2,3}"
+          - "7. semantic classes are {0,1,2}"
+          - "8. label value 3 is nodata, never a semantic class"
+          - "9. canonical validity is MK0_MNA == 1"
+          - "10. assert MLU==3 <=> MNA==0 and SAR==0.0 <=> MNA==0; do not assume"
+          - "11. source CRS EPSG:3857 is retained, never overwritten"
+          - "12. source transform is retained"
+          - "13. source spacing is 10 projected units, never universal 10 m ground"
+          - "14. MK0_SLOPE is excluded from the M4 SAR-only baseline"
+          - "15. MK0_DEM is excluded from the M4 SAR-only baseline"
+          - "16. raw SAR is linear sigma0, not decibel"
+          - "17. the 0.15 linear clip is explicit preprocessing, never assumed applied"
+          - "18. official activation-based split identity is preserved"
       - id: "sen1floods11"
         name: "Sen1Floods11"
-        role: "optional_training_input"
+        # ---------------------------------------------------------------------
+        # ROLE — FROZEN. Sen1Floods11 is the PRIMARY EXTERNAL VALIDATION corpus
+        # by default, not a training corpus. It remains in
+        # `allowed_training_datasets` because the specification permits it, but
+        # permission is not a plan: using it for training requires flipping
+        # `auxiliary_training_enabled` deliberately, and that flip is a
+        # scientific decision (different SAR representation, no pre-event
+        # imagery, binary labels) rather than a configuration convenience.
+        # ---------------------------------------------------------------------
+        role: "external_validation_input"
+        auxiliary_training_permitted_by_specification: true
+        auxiliary_training_enabled: false
         required: false
-        license: "CC BY 4.0"
+        # LICENSE GAP — MORE SERIOUS THAN A DISCREPANCY.
+        # The repository contains NO LICENSE file: the GitHub API reports
+        # "license": null and the root listing has no LICENSE/COPYING file. The
+        # README makes no licence statement. The CVPR page carries only the
+        # CVF's standard "rights retained by authors" boilerplate, which covers
+        # the paper rather than the data. The challenge specification's
+        # "CC BY 4.0" could NOT be confirmed against any primary source.
+        # Conservative reading: no redistribution right is established. Use is
+        # permitted (the data is published openly by the authors) but the data
+        # must not be re-published from this repository, and the licence must be
+        # resolved with the authors before any sample is committed.
+        license_declared:
+          repository_license_file: "ABSENT"
+          repository_readme: "no licence statement"
+          paper: "CVF boilerplate only; no dataset licence"
+          challenge_specification: "CC BY 4.0"
+        license_conservative: "UNDETERMINED — no redistribution right established"
+        license_status: "UNVERIFIED(no license file upstream)"
+        redistribution_permitted: false
         citation: "Bonafilia et al., 2020 (CVPRW 2020)"
-        path: null      # TODO: populate when the dataset is actually acquired
+        # VERIFIED(source) — primary sources, see docs/dataset-registry.md §1.5.2
+        sensors: ["sentinel-1", "sentinel-2"]
+        bundled_dem: null
+        optical: true
+        polarisations: ["VV", "VH"]
+        product_levels: ["GRD"]
+        tile_size_px: 512
+        crs: "EPSG:4326"
+        # ---------------------------------------------------------------------
+        # GEOMETRY — CORRECTED 2026-10-08 for the same defect that was fixed on
+        # the Kuro Siwo side.
+        #
+        # An earlier revision recorded `resolution_m: 10` for a corpus whose CRS
+        # is EPSG:4326. A geographic CRS has no metre spacing at all: the grid
+        # step is ~0.000090 DEGREES, and a degree of longitude shrinks with
+        # cos(lat) exactly as Web Mercator's metre grows with 1/cos(lat). So
+        # `resolution_m: 10` was a unit error, not merely an approximation, and
+        # it would have told the adapter that a Sen1Floods11 pixel, a Kuro Siwo
+        # pixel and a 10 m UTM pixel were interchangeable. None of the three are.
+        #
+        # Unlike the Kuro Siwo case this is not backed by a local delivery: the
+        # dataset is deliberately NOT present in this repository (C11), so the
+        # spacing is recorded from the published description and marked as such.
+        # ---------------------------------------------------------------------
+        source_crs: "EPSG:4326"
+        source_pixel_spacing_degrees: 0.000090
+        source_pixel_spacing_is_true_ground_metres: false
+        source_pixel_spacing_status: "VERIFIED(source) — not measured on a delivery"
+        true_ground_spacing_m:
+          status: "PER_CHIP — not a corpus constant"
+          derivation: "0.000090 deg * 111320 * cos(lat) east-west; ~10.02 m north-south"
+          measured: {}          # no local delivery; nothing measured (C11)
+          note: >-
+            North-south spacing is ~10 m everywhere; east-west spacing falls
+            with latitude. The adapter must derive spacing per chip from the
+            chip's own transform and centre latitude, never assume 10 m.
+        # Google Earth Engine S1 GRD preprocessing: thermal noise removal,
+        # radiometric calibration, terrain correction, then 10*log10 log scaling.
+        backscatter_representation: "decibel"
+        backscatter_representation_status: "VERIFIED(source) — README states 'Unit: dB'"
+        optical_processing_level: "L1C"      # TOA reflectance, NOT L2A surface
+        optical_bands: "all 13 (B1-B12 incl. B8A)"
+        optical_scaling: "TOA reflectance scaled by 10000"
+        optical_quality_mask_included: false
+        # S1 and S2 acquisition dates are close but NOT always identical;
+        # observed offsets of up to 2 days across events.
+        s1_s2_dates_identical: false
+        temporal_structure: "single post-event acquisition (no pre-event image)"
+        label_classes:            # recorded verbatim, including the -1 sentinel
+          -1: "No Data / Not Valid"
+          0: "Not Water"
+          1: "Water"
+        # The same semantic/stored/nodata split that Kuro Siwo needs, stated in
+        # the same shape so the two can be compared field by field rather than
+        # by reading prose. Sen1Floods11's sentinel is IN-BAND and NEGATIVE,
+        # which is a different mechanism from Kuro's in-band positive 3 and from
+        # Kuro's separate MK0_MNA raster. They are not interchangeable.
+        label_semantic_values: [0, 1]
+        label_stored_values: [-1, 0, 1]
+        label_nodata_value: -1
+        label_values_are_exhaustive: false
+        label_nodata_is_a_semantic_class: false
+        label_is_binary: true
+        validity_mechanisms:
+          - "label_nodata_sentinel"   # LabelHand == -1; the ONLY mechanism
+        validity_mechanisms_are_redundant: false
+        validity_canonical_source: "LabelHand != -1"
+        validity_semantics: "LabelHand: -1=invalid/nodata, 0=Not Water, 1=Water"
+        # No separate validity raster and no SAR nodata convention are published,
+        # so the three-way redundancy that Kuro Siwo offers does not exist here.
+        # The adapter gets ONE validity source and must not invent the others.
+        validity_integrity_assertions: []
+        validity_integrity_verified_on_delivered_data: false
+        separates_permanent_from_flood_water: false
+        has_debris_or_sediment_class: false
+        upstream_label_provenance: >-
+          446 hand-annotated chips; plus 4385 weak chips from Otsu thresholding
+          of the S1 VH band, 4385 weak chips from traditional Sentinel-2
+          classification, and 815 permanent-water chips derived from the JRC
+          surface-water dataset.
+        # Hand-labelled inventory, stated separately from the weak-label counts
+        # above because only the hand-labelled subset is usable as validation
+        # ground truth. The 814/815 permanent-water chips are JRC-DERIVED chip
+        # SELECTIONS, not a permanent-water label CLASS: LabelHand remains
+        # binary in every chip, so no permanent-vs-flood separation exists.
+        hand_labelled_flood_chips: 446
+        permanent_water_chips: 814
+        permanent_water_chips_are_a_label_class: false
+        per_sample_rasters: ["S1Hand", "S2Hand", "LabelHand", "S1OtsuLabelHand", "JRCWaterHand"]
+        s1_speckle_filtered: false
+        s1_clipped: false
+        s1_normalised: false
+        s1_observed_db_range: [-50, 20]
+        split_type: "event_based"
+        events: 11                 # 12 entries in the metadata; Colombia added later
+        path: null                 # TODO: populate when actually acquired
+        # ---------------------------------------------------------------------
+        # C11 — this dataset is external to the repository, by policy.
+        # ---------------------------------------------------------------------
+        repository_redistribution_allowed: false
+        external_to_repository: true
+        local_delivery_inspected: false
+        # ---------------------------------------------------------------------
+        # C8 — DATASET CAPABILITY MODEL. Same shape as Kuro Siwo's, different
+        # values. This is the point of the model: the two corpora disagree on
+        # six of these capabilities, and a single boolean or a shared enum
+        # could not express that.
+        # ---------------------------------------------------------------------
+        capabilities:
+          imagery:
+            sar: true
+            optical: true
+            # The hard structural difference. Sen1Floods11 is a single
+            # post-event acquisition, so there is no pre-event counterpart to
+            # pair with and no change signal to supervise.
+            pre_event: false
+            post_event: true
+            temporal_pair: false
+            change_features: false
+          terrain:
+            dem_bundled: false
+            dem_available_to_canonical_sample: false
+            slope_bundled: false
+            slope_trusted: false
+          labels:
+            flood: true
+            # JRCWaterHand ships alongside the label, but it is a separate
+            # JRC-derived raster, not a class inside LabelHand. LabelHand is
+            # binary in every chip.
+            permanent_water: false
+            separates_flood_from_permanent_water: false
+            multiclass_segmentation: false
+            binary_segmentation: true
+            nodata:
+              present: true
+              value: -1
+              form: "in_band_negative_sentinel"
+          sar_representation:
+            native: "decibel"
+            native_is_decibel: true
+            nodata_value: null        # no published SAR nodata convention
+            non_negative: false       # dB is signed; observed ~-50 to +20
+            dtype: "float32"
+            source_speckle_filtered: false
+            source_clipped: false
+          optical_representation:
+            processing_level: "L1C"
+            quantity: "TOA reflectance"
+            scale_factor: 10000
+            dtype: "int16"
+            band_count: 13
+            quality_mask_included: false
+            # Kuro Siwo has no optical branch at all, so this block exists on
+            # one corpus only. The capability model must tolerate that.
+            boa_surface_reflectance: false
+          splits:
+            type: "event_based"
+            authoritative_unit: "event"
+            official_split_is_authoritative: true
+        # ---------------------------------------------------------------------
+        # FORBIDDEN CAPABILITY UPGRADES — machine-readable so the prohibition
+        # is testable rather than a comment someone has to remember.
+        #
+        # Every entry here is a capability that Sen1Floods11 does NOT have and
+        # that an adapter must not synthesise. The failure mode this prevents
+        # is real and tempting: faking a pre-event image (by reusing the
+        # post-event one, or by substituting a neighbouring chip) would let one
+        # shared code path serve both corpora, and would silently produce a
+        # change feature that is identically zero or pure noise.
+        # ---------------------------------------------------------------------
+        forbidden_capability_upgrades:
+          - "pre_event imagery"
+          - "temporal pairs"
+          - "change detection features"
+          - "permanent-water vs flood separation"
+          - "BOA surface reflectance"
+          - "terrain / DEM features"
+          - "Kuro-style 3-class semantics"
+        # ---------------------------------------------------------------------
+        # C14 — SEN1FLOODS11 ADAPTER CONTRACT INVARIANTS.
+        # Contract only; no adapter exists. Sen1Floods11 has no local delivery,
+        # so none of these are measurement-backed and they must be re-checked
+        # against the real product before the adapter is trusted.
+        # ---------------------------------------------------------------------
+        adapter_invariants:
+          - "1. S1 is decibel, never linear sigma0"
+          - "2. VV and VH are both available"
+          - "3. S2 is TOA reflectance scaled by 10000"
+          - "4. labels are binary {0,1}"
+          - "5. label value -1 is nodata"
+          - "6. no permanent-water vs flood semantic separation exists"
+          - "7. post-event only"
+          - "8. no pre-event counterpart may be synthesised"
+          - "9. no change features may be derived"
+          - "10. no DEM capability is assumed"
+          - "11. source CRS EPSG:4326 is retained, never overwritten"
+          - "12. source transform is retained"
+          - "13. source spacing is ~0.000090 degrees, never universal 10 m ground"
+          - "14. no artificial Kuro Siwo semantics are imposed"
+          - "15. the dataset stays external to this repository until its licence is resolved"
+
+# =============================================================================
+# M4 CONTRACT FREEZE — decisions C1-C14
+#
+# This block is the machine-readable half of docs/m4-architecture-decision.md
+# §10. Every decision M4 needs in order to start is recorded here or in the
+# per-dataset `capabilities` / `adapter_invariants` blocks above (C8, C13, C14).
+#
+# WHY IT IS TOP-LEVEL AND NOT UNDER `production:`
+# `production:` is a closed set of five permitted data sources, asserted
+# exactly by tests/test_data_boundary.py. This block describes how those
+# sources are PROCESSED, not a sixth source, so putting it there would both
+# break that invariant and misrepresent what it is.
+#
+# WHAT "FROZEN" MEANS HERE
+# A frozen decision is one M4 may rely on without re-litigating it. It does NOT
+# mean the underlying science is settled: C4 freezes a DISCLOSED MISMATCH, and
+# C6 freezes a criterion whose VALUE is still blocked on validation data. Those
+# distinctions are recorded per-decision rather than averaged away.
+#
+# Validated by src/floodmap/utils/contract.py with extra="forbid", so a
+# misspelled key in this block fails loudly instead of being ignored.
+# =============================================================================
+m4_contract:
+  version: "1.0.0"
+  frozen_at: "2026-10-08"
+  # The canonical sample contract is documented, not implemented: M4 owns the
+  # adapter. See docs/m4-architecture-decision.md §11.
+  sample_contract_reference: "docs/m4-architecture-decision.md#11"
+
+  # ---------------------------------------------------------------------------
+  # C1 — CANONICAL PROJECTED CRS
+  #
+  # A single global projected EPSG code is NOT defensible for this project and
+  # is deliberately not chosen. The Kuro Siwo corpus spans roughly -18 deg to
+  # +60 deg latitude across all longitudes; no one projected CRS keeps metre
+  # fidelity over that extent. EPSG:3857 is metre-LABELLED but not metre-TRUE
+  # (that is exactly the defect recorded against the source), so inheriting it
+  # as the target would preserve the bug rather than fix it.
+  #
+  # The decision is therefore a RULE plus a family, applied per sample. Inside
+  # a UTM zone the scale error is under ~0.1%, which is what makes areas,
+  # lengths and slope kernels meaningful.
+  #
+  # This is the TARGET grid CRS. Source CRS is recorded independently on each
+  # dataset (`source_crs`) and is never overwritten by this choice.
+  # ---------------------------------------------------------------------------
+  canonical_crs:
+    is_target_not_source: true
+    family: "WGS 84 / UTM"
+    units: "metre"
+    epsg_pattern: "EPSG:326xx (north) | EPSG:327xx (south)"
+    single_global_epsg_chosen: false
+    single_global_epsg_rationale: >-
+      The training corpus spans ~-18 to +60 degrees latitude across all
+      longitudes. No single projected CRS holds metre fidelity over that
+      extent, so the canonical CRS is a per-sample rule rather than a constant.
+    zone_rule: "UTM zone and hemisphere derived from the sample's own centroid"
+    zone_sources:
+      kuro_siwo: "info.json.geom centroid, reprojected from EPSG:3857"
+      sen1floods11: "chip centroid in EPSG:4326"
+      production: "AOI centroid in EPSG:4326"
+    # Recorded as a DERIVED EXPECTATION, not a frozen value: `aoi` is
+    # deliberately null and the only candidate geometry on disk
+    # (`aoi.geojson`) has no provenance (docs/dataset-registry.md §1.6).
+    production_expected_epsg: "EPSG:32645"
+    production_expected_epsg_status: "DERIVED(pending AOI geometry) — not pinned"
+    forbid_geographic_crs_for_canonical_grid: true
+
+  # ---------------------------------------------------------------------------
+  # C2 — CANONICAL GSD / TARGET RESOLUTION
+  #
+  # 10.0 m true ground, in the canonical UTM CRS. This is a TARGET, and it is
+  # the native ground resolution of NO dataset in this project.
+  #
+  # Why 10 m and not one of the measured Kuro spacings:
+  #   1. The production inference source (Sentinel-1 IW GRDH) is natively 10 m,
+  #      so the path we actually have to serve needs no resampling at all.
+  #      Choosing 8.7 m would resample the inference input to match a training
+  #      artefact, which is the wrong direction to compromise.
+  #   2. Every MEASURED Kuro spacing (8.736-9.798 m) is FINER than 10 m, so
+  #      resampling to 10 m is a mild coarsening in every measured case. It
+  #      never manufactures detail that the source did not contain.
+  #   3. Sen1Floods11's ~0.000090 deg is ~10 m north-south and finer than 10 m
+  #      east-west away from the equator: same direction, same argument.
+  #
+  # The honest cost: the 40 unmeasured activations reach ~60N, where 10
+  # projected units is ~5 m of ground, so harmonising those to 10 m is a ~2x
+  # coarsening and a real loss of resolution. That is a disclosed consequence
+  # of this choice, not a side effect to discover later.
+  # ---------------------------------------------------------------------------
+  canonical_gsd:
+    value: 10.0
+    units: "metre"
+    measured_in: "true ground metres on the canonical UTM grid"
+    is_native_resolution_of_any_dataset: false
+    rationale: >-
+      Matches the native 10 m pixel spacing of the production Sentinel-1 IW
+      GRDH inference source, so the served path needs no resampling; and every
+      measured Kuro Siwo true spacing is finer than 10 m, so the training path
+      is coarsened rather than interpolated up.
+    relationship_to_kuro_source: >-
+      Kuro Siwo source spacing is 10 PROJECTED units in EPSG:3857, measured as
+      8.736-9.798 m true ground across five activations. The adapter resamples
+      per activation from that activation's own measured spacing; there is no
+      corpus-wide source GSD.
+    relationship_to_sen1floods11_source: >-
+      Sen1Floods11 source spacing is ~0.000090 degrees in EPSG:4326, which is
+      ~10 m north-south everywhere and shrinks with cos(latitude) east-west.
+      Spacing is derived per chip, never assumed.
+    disclosed_cost: >-
+      Unmeasured activations reach ~60N where 10 projected units is ~5 m of
+      ground; harmonising those to 10 m is roughly a 2x coarsening.
+
+  # ---------------------------------------------------------------------------
+  # C3 — RESAMPLING METHODS
+  #
+  # One method per raster TYPE. A single global method is forbidden because the
+  # types fail differently: bilinear on a class label invents classes that
+  # never existed (a 0/2 boundary becomes 1 = "Permanent Waters"), and nearest
+  # on continuous backscatter throws away the averaging that makes a coarsened
+  # pixel physically meaningful.
+  #
+  # The SAR domain condition is the subtle one and is binding: SAR must be
+  # resampled in LINEAR POWER, before the dB conversion. Averaging decibels
+  # averages logarithms, which is not the mean of the underlying power and is
+  # biased low. This is also why C10 places the clip before the conversion.
+  # ---------------------------------------------------------------------------
+  resampling:
+    forbid_generic_method: true
+    forbid_default: true
+    methods:
+      continuous_sar: "bilinear"
+      continuous_optical: "bilinear"
+      categorical_label: "nearest"
+      binary_validity_mask: "nearest"
+      dem: "bilinear"
+    sar_resample_domain: "linear_power"
+    sar_resample_before_db_conversion: true
+    sar_resample_domain_rationale: >-
+      Averaging decibels averages logarithms, which is not the mean of the
+      underlying power and is biased low. Resample linear sigma0, then convert.
+    categorical_rationale: >-
+      Nearest neighbour cannot produce a value absent from the source, so it
+      cannot invent a class at a boundary. `mode` was considered and rejected:
+      it shifts class prevalence near boundaries by an amount that depends on
+      the resample ratio, and under C1/C2 that ratio varies per activation, so
+      label statistics would become a function of geography.
+    dem_status: "declared but unused — DEM is excluded from the M4 baseline"
+
+  # ---------------------------------------------------------------------------
+  # C4 — SPECKLE POLICY
+  #
+  # DECISION: our pipeline applies NO speckle filter, on any path.
+  #
+  # Parity is NOT claimed, and this is the one decision where that must be said
+  # plainly. Kuro Siwo arrives already Lee Sigma filtered by its authors and
+  # cannot be un-filtered; Sen1Floods11 and our own M2 are unfiltered. So:
+  #   - "filter everything to match Kuro" would double-filter Kuro;
+  #   - "filter nothing" leaves a real train/serve texture mismatch, because a
+  #     CNN reads texture and speckle is texture.
+  # There is no option that produces true parity with the corpus we have, so
+  # the policy is the honest one (apply nothing, uniformly) and the residual
+  # mismatch is disclosed and must be quantified by ablation before any claim
+  # about transfer is made.
+  #
+  # The schema fix matters as much as the policy. Until 2026-10-08
+  # `speckle_filter` sat under an unmodelled `sentinel1.steps` block in
+  # configs/preprocessing.yaml with pydantic extra="allow", so setting it was a
+  # silent no-op: it parsed and was discarded. `steps` and `speckle` are now
+  # modelled with extra="forbid" in src/floodmap/preprocessing/config.py.
+  # ---------------------------------------------------------------------------
+  speckle:
+    applied_by_our_pipeline: false
+    filter_family: null
+    parameters: null
+    pipeline_site: null
+    parity_established: false
+    parity_possible: false
+    parity_impossible_reason: >-
+      Kuro Siwo is delivered already Lee Sigma filtered and cannot be
+      un-filtered, so no setting of our own filter makes the training and
+      inference paths identical in texture statistics.
+    source_state:
+      kuro_siwo: "Lee Sigma, 7x7 window, 3x3 target, sigma 0.9 (applied upstream)"
+      sen1floods11: "none"
+      production_sentinel1: "none"
+    mismatch_disclosed: true
+    ablation_required_before_transfer_claim: true
+    config_can_be_silently_discarded: false
+    config_schema_owner: "src/floodmap/preprocessing/config.py"
+
+  # ---------------------------------------------------------------------------
+  # C5 — STATISTICS ARTIFACT
+  #
+  # Three KINDS of statistics exist and must never be confused:
+  #   reference  - published upstream values. Cross-check only.
+  #   fitted     - OUR normalisation parameters, from the training split only.
+  #   validation - measured on validation data for DRIFT REPORTING only.
+  #
+  # NO FITTED STATISTICS EXIST. None are invented here. Normalisation METHOD is
+  # explicitly NOT part of this frozen contract (configs/segmentation.yaml and
+  # configs/features.yaml both keep `normalisation.method: null`); what is
+  # frozen is the artifact SCHEMA that M4 must emit when it does fit them.
+  #
+  # The layout is a SIDECAR PAIR, not one wrapped file, and that is forced by
+  # the existing reader: src/floodmap/features/pipeline.py coerces float() over
+  # every value of every top-level key in the statistics JSON, so a provenance
+  # block inside that file would raise rather than be ignored. Keeping
+  # provenance beside the values also matches the repository's established
+  # `*_provenance.yaml` convention.
+  # ---------------------------------------------------------------------------
+  statistics:
+    schema_id: "floodmap.statistics/1"
+    schema_version: "1.0.0"
+    kinds: ["reference", "fitted", "validation"]
+    layout: "sidecar_pair"
+    values_file: "statistics.json"
+    values_shape: "channel_name -> {mean, std}"
+    values_shape_rationale: >-
+      Flat and float-only, because floodmap.features.pipeline coerces float()
+      over every value of every top-level key; an embedded provenance block
+      would raise there.
+    provenance_file: "statistics_meta.json"
+    provenance_required_fields:
+      - "schema_id"
+      - "schema_version"
+      - "kind"
+      - "dataset_id"
+      - "split"
+      - "activations"
+      - "channels"
+      - "representation"
+      - "preprocessing_state"
+      - "clip_state"
+      - "temporal_role_basis"
+      - "aggregation_basis"
+      - "n_tiles"
+      - "n_valid_pixels"
+      - "created_at"
+      - "code_version"
+    fitted:
+      exists: false
+      source_split: "kuro_siwo training activations only"
+      fitted_from_validation_or_test: false
+      path: null
+    reference:
+      dataset_id: "kuro_siwo"
+      usable_as_fitted_normalisation_parameters: false
+      cross_check_policy: "tolerance_banded_over_full_training_split"
+      cross_check_is_per_raster_equality_gate: false
+    validation:
+      purpose: "drift reporting only"
+      may_be_used_for_normalisation: false
+    normalisation_method_is_part_of_this_contract: false
+    normalisation_method_status: "DEFERRED to M4; configs keep method: null"
+
+  # ---------------------------------------------------------------------------
+  # C6 — THRESHOLD / CHECKPOINT SELECTION CRITERION
+  #
+  # PRIMARY CRITERION: IoU of the flood class (Kuro Siwo class 2).
+  #
+  # Why not macro-IoU over {No water, Permanent Waters, Floods}: two of those
+  # three classes are easy. "No water" dominates by area and "Permanent
+  # Waters" is a largely static, high-contrast target. A macro average over
+  # them can rise while flood IoU falls, which would select a checkpoint that
+  # is worse at the only thing the product claims to do. Per-class IoU and F1,
+  # macro and micro averages, and the full confusion matrix are all still
+  # REPORTED (configs/evaluation.yaml) — they are just not selected on.
+  #
+  # Three split ROLES, kept distinct:
+  #   training           - Kuro Siwo train activations. Fitting happens here.
+  #   validation         - Kuro Siwo val activations. Selection happens here,
+  #                        and only here.
+  #   external_validation- Sen1Floods11. Reported, never selected on. It also
+  #                        CANNOT be selected on: it is binary, so it cannot
+  #                        score the flood-vs-permanent-water distinction that
+  #                        the criterion depends on.
+  #
+  # The criterion is frozen; the VALUE is not available. Only one validation
+  # activation (19 tiles) is present locally, and one activation cannot
+  # distinguish event-specific behaviour from generalisable behaviour. Any
+  # threshold selected in that state is development-only and not reportable.
+  # ---------------------------------------------------------------------------
+  threshold_selection:
+    primary_criterion: "iou_flood_class"
+    primary_criterion_class_id: 2
+    primary_criterion_class_name: "Floods"
+    primary_criterion_rationale: >-
+      Flood is the minority class and the product's purpose; a macro average
+      over the easy majority and permanent-water classes can improve while
+      flood IoU degrades.
+    reported_but_not_selected_on:
+      - "per_class_iou"
+      - "per_class_f1"
+      - "macro_iou"
+      - "micro_iou"
+      - "confusion_matrix"
+    selection_split_role: "validation"
+    forbid_selection_on_training: true
+    forbid_selection_on_test: true
+    forbid_selection_on_external_validation: true
+    split_roles:
+      training: "kuro_siwo train activations"
+      validation: "kuro_siwo val activations"
+      external_validation: "sen1floods11 hand-labelled chips"
+    min_validation_activations_for_a_reportable_threshold: 2
+    min_validation_activations_rationale: >-
+      A single activation cannot separate event-specific behaviour from
+      generalisable behaviour, so a threshold tuned on one event is a property
+      of that event. Two distinct activations is the minimum that can show the
+      difference at all; it is a floor, not a sufficiency claim.
+    validation_activations_available_locally: 1
+    value_status: "DEFERRED(blocked on validation data) — see local_subset"
+    development_only_until_satisfied: true
+
+  # ---------------------------------------------------------------------------
+  # C7 — SPATIAL BUFFER / LEAKAGE
+  #
+  # DECISION: no additional spatial buffer. 0 m, and that is a decision rather
+  # than an unset value.
+  #
+  # The reason it is not an invented distance: Kuro Siwo's official split
+  # assigns WHOLE ACTIVATIONS, so every tile of an activation lands in exactly
+  # one split. There is no train/validation tile adjacency anywhere in the
+  # corpus for a buffer to separate. A non-zero distance here would be a number
+  # with nothing to act on, and would imply a tile-level split we do not have.
+  #
+  # One honest gap, disclosed rather than closed: activation-level splitting
+  # isolates EVENTS, not necessarily GEOGRAPHY. Two activations over the same
+  # basin at different dates could sit in different splits and would share
+  # terrain, land cover and permanent water. Checking that needs all 45
+  # activation geometries; 5 are available. This is a disclosure, not an M4
+  # blocker: it cannot make the split worse than it already is, and it is
+  # verifiable the moment the geometries arrive.
+  # ---------------------------------------------------------------------------
+  spatial_isolation:
+    additional_buffer_required: false
+    spatial_buffer_m: 0
+    buffer_is_a_decision_not_an_unset_value: true
+    primary_mechanism: "activation_level_partition"
+    mechanism_rationale: >-
+      Whole activations are assigned to a single split, so no tile from one
+      activation can be spatially adjacent to a tile from another split within
+      the same event. There is no cross-split adjacency for a buffer to act on.
+    assert_disjoint_activation_ids: true
+    forbid_sub_activation_split: true
+    forbid_sub_activation_split_reason: >-
+      A tile-level or pixel-level split inside one activation WOULD create
+      cross-split adjacency, at which point a justified buffer distance becomes
+      mandatory. Prohibited for M4 rather than left to judgement.
+    assert_activation_geometry_disjointness: "PENDING(data)"
+    assert_activation_geometry_disjointness_note: >-
+      Activation-level splitting isolates events, not geography. Two
+      activations over the same basin at different dates could share terrain
+      and permanent water across splits. Verifying requires all 45 activation
+      geometries; 5 are available locally.
+
+  # ---------------------------------------------------------------------------
+  # C9 — OUTPUT NODATA
+  #
+  # Semantic class IDs and "no information here" are different kinds of thing
+  # and get different encodings. A class ID used as nodata makes every
+  # downstream count ambiguous: a pixel labelled 0 could mean "we observed dry
+  # ground" or "we had nothing to say", and no consumer can tell them apart.
+  #
+  # Note what 3 is and is not. Upstream, 3 is Kuro Siwo's IN-BAND LABEL nodata
+  # sentinel. We deliberately do NOT reuse it for our OUTPUT nodata, even
+  # though it is not a semantic class: keeping the input sentinel and the
+  # output sentinel distinct means a raster's provenance is readable from its
+  # values. 3 appears below only as the loss/metric ignore index, which is an
+  # INPUT-side concern.
+  # ---------------------------------------------------------------------------
+  output_nodata:
+    semantic_class_ids: [0, 1, 2]
+    class_mask_dtype: "uint8"
+    class_mask_nodata: 255
+    probability_dtype: "float32"
+    probability_nodata: -9999.0
+    continuous_nodata: -9999.0
+    forbid_semantic_class_id_as_nodata: true
+    distinct_from_input_label_sentinel: true
+    input_label_sentinel: 3
+    loss_and_metrics_ignore_index: 3
+    loss_and_metrics_ignore_index_is_an_input_concern: true
+    rationale: >-
+      255 cannot collide with the semantic classes {0,1,2} nor with the
+      upstream input sentinel 3 in a uint8 mask, and -9999.0 is outside the
+      legitimate range of every continuous output (decibel backscatter,
+      decibel change, probability in [0,1]).
+    # Deliberately NOT propagated into configs/features.yaml or
+    # configs/preprocessing.yaml by this freeze. Those are M2/M3 artifact
+    # contracts with their own unresolved bindings; forcing the value in now
+    # would resolve one field of a config that still cannot run, for no gain.
+    propagated_to_m2_m3_configs: false
+    propagated_to_m2_m3_configs_status: "DEFERRED to those milestones"
+
+  # ---------------------------------------------------------------------------
+  # C10 — KURO SIWO CLIP IMPLEMENTATION SITE
+  #
+  # The clip happens in the ADAPTER, on linear sigma0, BEFORE the dB
+  # conversion. One site, stated once.
+  #
+  # Three representations must not be confused, so they are named separately:
+  #   source        - linear sigma0, UNCLIPPED. Observed VV max 901.92.
+  #   preprocessing - linear sigma0, clipped at 0.15.
+  #   model         - decibel, upper bound 10*log10(0.15) = -8.2391 dB.
+  #
+  # Clipping in the LINEAR domain rather than in dB is deliberate: 0.15 is the
+  # exact published bound, while -8.2391 is a rounded transform of it. Clipping
+  # linear-then-converting applies the exact bound; clipping in dB would apply
+  # a slightly different one and make the training distribution depend on how
+  # many decimals we wrote down.
+  #
+  # Raw delivered files are never modified. The delivery is NOT pre-clipped, so
+  # an adapter that assumed otherwise would train on a distribution thousands
+  # of times wider than intended.
+  # ---------------------------------------------------------------------------
+  clip:
+    enabled: true
+    domain: "linear_sigma0"
+    max_linear: 0.15
+    equivalent_db: -8.2391
+    equivalent_db_is_recorded_not_applied: true
+    site: "dataset_adapter"
+    site_detail: "after reading raw linear sigma0, before linear-to-dB conversion"
+    applied_before_db_conversion: true
+    raw_source_mutated: false
+    delivered_is_pre_clipped: false
+    configurable: true
+    applies_to_paths:
+      - "training_adapter"
+      - "production_preprocessing"
+    both_paths_or_neither: true
+    production_path_site: "after radiometric calibration, before linear-to-dB"
+    production_path_status: "PENDING(M2 wiring) — contract fixed, step not yet implemented"
+    is_m3_feature_level_clamp: false
+    m3_clip_to_valid_range_remains_disabled: true
+    representations:
+      source: "linear sigma0, unclipped"
+      preprocessing: "linear sigma0, clipped at 0.15"
+      model: "decibel, upper bound -8.2391 dB"
+
+  # ---------------------------------------------------------------------------
+  # C11 — LICENSING / DATA REDISTRIBUTION POLICY
+  #
+  # Upstream licence status is UNRESOLVED for both corpora and is not
+  # manufactured here. Kuro Siwo has a four-way discrepancy; Sen1Floods11 has
+  # no licence file at all. Those facts are recorded per dataset above.
+  #
+  # Our policy does not wait for them: nothing is redistributed from this
+  # repository either way. That keeps "we do not know what is permitted"
+  # separate from "we have decided not to".
+  # ---------------------------------------------------------------------------
+  redistribution_policy:
+    raw_data_stays_external: true
+    derived_dataset_copies_committed: false
+    sample_tiles_committed: false
+    samples_dir_may_hold_training_corpus_samples: false
+    metadata_and_config_may_describe_external_paths: true
+    docs_may_imply_redistribution: false
+    upstream_license_status:
+      kuro_siwo: "DISCREPANCY(unresolved)"
+      sen1floods11: "UNVERIFIED(no license file upstream)"
+    license_manufactured: false
+    resolution_required_before:
+      - "committing any sample tile"
+      - "publishing any derived dataset"
+
+  # ---------------------------------------------------------------------------
+  # C12 — LOCAL SUBSET SUFFICIENCY
+  #
+  # The local Kuro Siwo corpus is INCOMPLETE: 5 of 45 catalogued activations.
+  # It is enough to build and test an adapter against; it is not enough to make
+  # a scientific claim with. Both halves of that are encoded, because the
+  # failure mode is treating the first as licence for the second.
+  #
+  # The official split is NOT redefined by what happens to be on disk. An
+  # activation that is absent locally is MISSING, never "not in the split".
+  # ---------------------------------------------------------------------------
+  local_subset:
+    official_split_modified: false
+    official_split_redefined_by_local_availability: false
+    absent_activation_is_missing_not_unsplit: true
+    development_use_permitted: true
+    production_training_run_permitted: false
+    threshold_selection_permitted: false
+    scientific_model_selection_permitted: false
+    must_report_missing_activations: true
+    must_resolve_split_by_official_activation_id: true
+    activations_present: 5
+    activations_catalogued: 45
+    train_activations_present: 3
+    train_activations_total: 27
+    val_activations_present: 1
+    val_activations_total: 7
+    test_activations_present: 1
+    test_activations_total: 10
+    train_tile_skew: "1111004 alone is 71% of available train tiles"
+    status: "INCOMPLETE — development permitted, claims blocked"
+
+  # ---------------------------------------------------------------------------
+  # C8 — DATASET CAPABILITY MODEL
+  #
+  # Recorded per dataset, under
+  # `production.training_datasets.datasets[*].capabilities`, so a capability
+  # claim sits next to the evidence for it. The two corpora disagree on eight
+  # capability keys; `capability_keys_that_differ` names them so the difference
+  # is assertable rather than something a reader has to diff by hand.
+  # ---------------------------------------------------------------------------
+  capabilities_location: "production.training_datasets.datasets[*].capabilities"
+  capability_model_is_a_single_boolean: false
+  capability_model_uses_single_validity_form_literal: false
+  capability_keys_that_differ:
+    - "imagery.optical"
+    - "imagery.pre_event"
+    - "imagery.temporal_pair"
+    - "imagery.change_features"
+    - "labels.permanent_water"
+    - "labels.separates_flood_from_permanent_water"
+    - "labels.multiclass_segmentation"
+    - "sar_representation.native"
+
+  # ---------------------------------------------------------------------------
+  # C13 / C14 — ADAPTER CONTRACT INVARIANTS
+  #
+  # Recorded per dataset, under
+  # `production.training_datasets.datasets[*].adapter_invariants`, so an
+  # invariant cannot drift away from the dataset facts it constrains. 18 for
+  # Kuro Siwo, 15 for Sen1Floods11.
+  # ---------------------------------------------------------------------------
+  adapter_invariants_location: "production.training_datasets.datasets[*].adapter_invariants"
+  adapter_invariant_counts:
+    kuro_siwo: 18
+    sen1floods11: 15
+
+  # ---------------------------------------------------------------------------
+  # M4 BASELINE SCOPE — what the frozen contract does and does not cover.
+  # ---------------------------------------------------------------------------
+  baseline:
+    modality: "SAR only"
+    dem_input: false
+    bundled_slope_input: false
+    optical_input: false
+    temporal_depth: "1 pre + 1 post"
+    label_scheme: "kuro_siwo native 3-class"
+    corpus_union_permitted: false
+    debris_class_claimed: false
+    threshold_inside_model: false
 
 # -----------------------------------------------------------------------------
 # VALIDATION-ONLY SOURCES — never production inputs
