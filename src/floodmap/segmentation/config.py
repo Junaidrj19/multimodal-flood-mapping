@@ -30,7 +30,7 @@ from floodmap.utils.config import project_root
 
 from .channels import CHANNEL_ORDER, IGNORE_INDEX, NUM_CLASSES, REQUIRED_SAR_REPRESENTATION
 
-__all__ = ["ExperimentConfig", "load_experiment", "experiments_dir"]
+__all__ = ["ExperimentConfig", "ReprojectionSection", "load_experiment", "experiments_dir"]
 
 
 class _Strict(BaseModel):
@@ -69,6 +69,60 @@ class DatasetSection(_Strict):
                 "the test split must not be used for training or selection"
             )
         return self
+
+
+class ReprojectionSection(_Strict):
+    """Canonical-grid reprojection, shared with M2 production preprocessing.
+
+    Disabled by default so enabling it is a visible, recorded decision rather
+    than a silent change to what every existing run meant. The real baseline
+    config enables it, because training on Kuro's delivered EPSG:3857 grid
+    (10 PROJECTED units = 8.736-9.798 m of true ground across the five
+    delivered activations) while serving genuinely 10 m Sentinel-1 imagery is a
+    spatial train/serve mismatch.
+    """
+
+    enabled: bool = False
+    resolution_m: float = Field(gt=0.0, default=10.0)
+    #: Fixed output pixel count. Required when enabled: resampling a 224 px
+    #: Kuro tile from its measured spacing to 10 m gives a footprint-sized
+    #: output that VARIES per activation, and a dataset returning variable
+    #: shapes cannot be collated into a batch.
+    tile_size: Optional[int] = Field(default=None, gt=0)
+    sar_resampling: str = "bilinear"
+    label_resampling: str = "nearest"
+    #: ``strict`` means a target pixel is valid only if its whole
+    #: interpolation kernel came from valid source pixels.
+    nodata_mode: str = "strict"
+
+    @model_validator(mode="after")
+    def _methods_follow_c3(self) -> "ReprojectionSection":
+        if self.sar_resampling.lower() in {"nearest", "mode"}:
+            raise ValueError(
+                "SAR must be resampled with an averaging method; nearest discards the "
+                "averaging that makes a coarsened backscatter pixel physically meaningful"
+            )
+        if self.label_resampling.lower() not in {"nearest", "mode"}:
+            raise ValueError(
+                f"labels must use nearest neighbour, got {self.label_resampling!r}: an "
+                "averaging method invents classes that were never in the source "
+                "(a 0/2 boundary interpolates to 1, which is 'Permanent Waters')"
+            )
+        if self.nodata_mode not in {"strict", "majority"}:
+            raise ValueError(
+                f"nodata_mode must be 'strict' or 'majority', got {self.nodata_mode!r}"
+            )
+        if self.enabled and self.tile_size is None:
+            raise ValueError(
+                "reprojection.tile_size is required when reprojection is enabled: the "
+                "footprint-sized output varies per activation and could not be batched"
+            )
+        return self
+
+    def nodata_policy(self):
+        from floodmap.preprocessing.reprojection import NodataPolicy
+
+        return NodataPolicy(mode=self.nodata_mode)
 
 
 class DataLoaderSection(_Strict):
@@ -266,6 +320,7 @@ class ExperimentConfig(_Strict):
     status: str = "development"
     primary_metric: str = "iou_flood_class"
     dataset: DatasetSection
+    reprojection: ReprojectionSection = Field(default_factory=ReprojectionSection)
     dataloader: DataLoaderSection
     model: ModelSection
     loss: LossSection

@@ -43,7 +43,7 @@ from .channels import (
 )
 from .augment import GeometricAugmentation
 from .checkpoint import load_checkpoint, save_checkpoint
-from .config import ExperimentConfig, load_experiment
+from .config import ExperimentConfig, ReprojectionSection, load_experiment
 from .dataset import KuroSiwoSarDataset, collate_samples
 from .device import seed_everything, select_device
 from .losses import build_loss
@@ -57,6 +57,11 @@ from .normalization import (
     fit_training_statistics,
 )
 from .tensors import TensorSample, sample_to_tensors, stack_channels
+from .spatial import (
+    ReprojectedSample,
+    reproject_canonical_sample,
+    source_grid_for_sample,
+)
 from .train import TrainingResult, evaluate, run_training, train_one_epoch
 
 __all__ = [
@@ -72,6 +77,8 @@ __all__ = [
     "MetricResult",
     "NUM_CLASSES",
     "REQUIRED_SAR_REPRESENTATION",
+    "ReprojectedSample",
+    "ReprojectionSection",
     "SEMANTIC_VALUES",
     "SegmentationMetrics",
     "StatisticsArtifact",
@@ -86,11 +93,13 @@ __all__ = [
     "fit_training_statistics",
     "load_checkpoint",
     "load_experiment",
+    "reproject_canonical_sample",
     "run_training",
     "sample_to_tensors",
     "save_checkpoint",
     "seed_everything",
     "select_device",
+    "source_grid_for_sample",
     "stack_channels",
     "train_one_epoch",
 ]

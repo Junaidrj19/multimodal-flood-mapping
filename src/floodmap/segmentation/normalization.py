@@ -285,6 +285,7 @@ def fit_training_statistics(
     *,
     dataset_id: str = "kuro_siwo",
     code_version: Optional[str] = None,
+    reprojection: Optional[object] = None,
 ) -> StatisticsArtifact:
     """Fit per-channel mean and std over the TRAINING split only.
 
@@ -303,6 +304,13 @@ def fit_training_statistics(
     The aggregation basis is per valid PIXEL, pooled across tiles — recorded in
     provenance because a per-tile-then-average basis gives a different answer
     on tiles with differing valid fractions.
+
+    ``reprojection`` MUST match what training will use. Statistics fitted on
+    the delivered source grid do not describe a reprojected training input:
+    bilinear resampling changes the variance of the field it is applied to, so
+    a std fitted pre-resampling is systematically wrong for post-resampling
+    data. The setting is therefore recorded in provenance and the training path
+    passes its own configuration straight through.
     """
 
     count = np.zeros(len(CHANNEL_ORDER), dtype=np.float64)
@@ -324,8 +332,27 @@ def fit_training_statistics(
                 f"{sample.dataset_id!r}, not {dataset_id!r}; a mixed-corpus fit would "
                 "average two different SAR representations"
             )
-        stack = stack_channels(sample)
-        valid = np.asarray(sample.validity, dtype=bool)
+        if reprojection is not None:
+            # Identical call shape to the training path, via the shared
+            # spatial component, so the fitted parameters describe exactly the
+            # arrays the model will receive.
+            from .spatial import reproject_canonical_sample
+
+            warped = reproject_canonical_sample(
+                sample,
+                resolution_m=getattr(reprojection, "resolution_m", 10.0),
+                tile_size=getattr(reprojection, "tile_size", None),
+                nodata_policy=reprojection.nodata_policy()
+                if hasattr(reprojection, "nodata_policy")
+                else None,
+                sar_resampling=getattr(reprojection, "sar_resampling", "bilinear"),
+                label_resampling=getattr(reprojection, "label_resampling", "nearest"),
+            )
+            stack = warped.image
+            valid = warped.valid_mask
+        else:
+            stack = stack_channels(sample)
+            valid = np.asarray(sample.validity, dtype=bool)
         if not valid.any():
             continue
         selected = stack[:, valid].astype(np.float64, copy=False)
@@ -377,6 +404,21 @@ def fit_training_statistics(
         extra={
             "validity_basis": "M4 canonical validity mask (Kuro MK0_MNA == 1)",
             "fitted_from_validation_or_test": False,
+            # Recorded because a std fitted before resampling does not describe
+            # a resampled training input: bilinear changes field variance.
+            "spatial_transform": (
+                {"reprojected_to_canonical_grid": False, "grid": "delivered source grid"}
+                if reprojection is None
+                else {
+                    "reprojected_to_canonical_grid": True,
+                    "shared_implementation": "floodmap.preprocessing.reprojection",
+                    "resolution_m": getattr(reprojection, "resolution_m", None),
+                    "tile_size": getattr(reprojection, "tile_size", None),
+                    "sar_resampling": getattr(reprojection, "sar_resampling", None),
+                    "label_resampling": getattr(reprojection, "label_resampling", None),
+                    "nodata_mode": getattr(reprojection, "nodata_mode", None),
+                }
+            ),
         },
     )
     return StatisticsArtifact(kind="fitted", values=values, provenance=provenance)

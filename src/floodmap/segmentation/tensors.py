@@ -137,6 +137,7 @@ def sample_to_tensors(
     sample: CanonicalSample,
     *,
     ignore_index: Optional[int] = None,
+    reprojection: Optional["ReprojectionSettings"] = None,
 ) -> TensorSample:
     """Convert one canonical sample into model input, target and validity mask.
 
@@ -148,6 +149,13 @@ def sample_to_tensors(
         Loss ignore index. Defaults to the sample's own
         ``nodata.ignore_index``, which the Kuro adapter sets to 3. Passed
         explicitly only by tests that need to prove the plumbing is honoured.
+    reprojection
+        When given, the sample is first warped onto its per-sample canonical
+        UTM grid using the SHARED spatial component in
+        ``floodmap.preprocessing.reprojection`` — the same code M2 production
+        preprocessing uses. When ``None`` the sample is used on its delivered
+        source grid, which for Kuro is 10 PROJECTED units in EPSG:3857 rather
+        than 10 m of true ground.
 
     Returns
     -------
@@ -164,6 +172,28 @@ def sample_to_tensors(
             f"ignore_index {resolved_ignore} collides with a semantic class "
             f"{SEMANTIC_VALUES}; ignored pixels would be indistinguishable from "
             "observed ones"
+        )
+
+    if reprojection is not None:
+        from .spatial import reproject_canonical_sample
+
+        warped = reproject_canonical_sample(
+            sample,
+            ignore_index=resolved_ignore,
+            resolution_m=reprojection.resolution_m,
+            tile_size=reprojection.tile_size,
+            nodata_policy=reprojection.nodata_policy(),
+            sar_resampling=reprojection.sar_resampling,
+            label_resampling=reprojection.label_resampling,
+        )
+        return TensorSample(
+            image=torch.from_numpy(np.ascontiguousarray(warped.image)),
+            target=torch.from_numpy(np.ascontiguousarray(warped.target)),
+            valid_mask=torch.from_numpy(np.ascontiguousarray(warped.valid_mask)),
+            sample_id=sample.sample_id,
+            split=sample.split,
+            event_id="" if sample.event_id is None else str(sample.event_id),
+            spatial_provenance=warped.provenance,
         )
 
     image = stack_channels(sample)

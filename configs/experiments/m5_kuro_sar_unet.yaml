@@ -74,6 +74,50 @@ dataset:
   limit_validation: null
 
 # -----------------------------------------------------------------------------
+# Canonical-grid reprojection — SHARED with M2 production preprocessing
+#
+# ENABLED, because the alternative is a spatial train/serve mismatch. Kuro is
+# delivered on an EPSG:3857 grid whose pixels are 10 PROJECTED UNITS, which is
+# 8.736-9.798 m of true ground across the five delivered activations and ~5 m
+# near 60N. Production inference serves genuinely 10 m Sentinel-1 IW GRDH. The
+# M4 adapter records target-grid METADATA but performs no reprojection, and
+# metadata alone is not reprojection.
+#
+# The implementation is floodmap.preprocessing.reprojection, called by both
+# this training path and M2. One code path, so the two cannot drift.
+#
+# tile_size is REQUIRED here and is not a free choice. A 224 px source tile
+# resampled to 10 m yields a footprint-sized output that VARIES per activation,
+# measured on the local delivery as:
+#   1111002 219x220    1111003 220x222    1111004 201x203
+#   1111005 216x217    1111006 217x218
+# A dataset returning variable shapes cannot be collated into a batch, so the
+# pixel count must be fixed. 224 is chosen because it is the smallest
+# 2**depth-divisible size that CROPS NO ACTIVATION (the largest natural
+# footprint is 222). A smaller value such as 208 would waste less area on
+# 1111004 but would crop four of the five activations, and cropping discards
+# real labelled observations whereas padding only adds pixels that
+# ignore_index excludes from loss and metrics anyway. The cost of 224 is
+# therefore compute on ignored pixels, not data.
+#
+# nodata_mode: strict means a target pixel is valid only if its entire
+# interpolation kernel came from valid source pixels. Kuro stores invalid SAR
+# as 0.0, which is indistinguishable from genuine near-zero backscatter once it
+# enters a bilinear kernel — and near-zero backscatter IS the open-water
+# signal. Strict discards a thin fringe around every nodata region; measured
+# against the permissive 'majority' alternative on one tile per activation that
+# fringe costs 0.0-0.8% of valid pixels, so the conservative choice is close to
+# free. It is the correct direction to err regardless.
+# -----------------------------------------------------------------------------
+reprojection:
+  enabled: true
+  resolution_m: 10.0        # true ground metres, in the per-sample UTM CRS
+  tile_size: 224
+  sar_resampling: "bilinear"   # in LINEAR POWER, before any dB conversion (C3)
+  label_resampling: "nearest"  # bilinear on a 0/2 boundary would yield class 1
+  nodata_mode: "strict"
+
+# -----------------------------------------------------------------------------
 # Data loading
 #
 # Lazy and batched. The 7,052 locally available training tiles are never

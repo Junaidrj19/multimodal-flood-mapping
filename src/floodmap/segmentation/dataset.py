@@ -55,6 +55,12 @@ class KuroSiwoSarDataset(Dataset):
     limit
         Optional cap applied AFTER deterministic sorting, so the same first-N
         tiles are taken on every run and every machine.
+    reprojection
+        Optional canonical-grid reprojection settings. When supplied, each
+        sample is warped onto its per-sample 10 m UTM grid by the SHARED
+        component in ``floodmap.preprocessing.reprojection`` — the same code
+        M2 production preprocessing uses, which is what makes training and
+        inference spatially comparable.
     """
 
     def __init__(
@@ -67,12 +73,14 @@ class KuroSiwoSarDataset(Dataset):
         sample_ids: Optional[Sequence[str]] = None,
         limit: Optional[int] = None,
         ignore_index: Optional[int] = None,
+        reprojection: Optional[object] = None,
     ) -> None:
         self.adapter = adapter
         self.split = split
         self.statistics = statistics
         self.augmentation = augmentation
         self.ignore_index = ignore_index
+        self.reprojection = reprojection
 
         available = {
             ref.sample_id: ref for ref in adapter.discover() if ref.split == split
@@ -123,6 +131,19 @@ class KuroSiwoSarDataset(Dataset):
             "activations": list(self._activations),
             "channels": list(CHANNEL_ORDER),
             "statistics_kind": None if self.statistics is None else self.statistics.kind,
+            "reprojected_to_canonical_grid": self.reprojection is not None,
+            "spatial_transform": (
+                None
+                if self.reprojection is None
+                else {
+                    "shared_implementation": "floodmap.preprocessing.reprojection",
+                    "resolution_m": getattr(self.reprojection, "resolution_m", None),
+                    "tile_size": getattr(self.reprojection, "tile_size", None),
+                    "sar_resampling": getattr(self.reprojection, "sar_resampling", None),
+                    "label_resampling": getattr(self.reprojection, "label_resampling", None),
+                    "nodata_mode": getattr(self.reprojection, "nodata_mode", None),
+                }
+            ),
         }
 
     # -- Dataset protocol --------------------------------------------------
@@ -137,7 +158,9 @@ class KuroSiwoSarDataset(Dataset):
 
     def __getitem__(self, index: int) -> TensorSample:
         sample = self.adapter.load_sample(self.sample_ids[index])
-        tensors = sample_to_tensors(sample, ignore_index=self.ignore_index)
+        tensors = sample_to_tensors(
+            sample, ignore_index=self.ignore_index, reprojection=self.reprojection
+        )
 
         if self._mean is not None and self._std is not None:
             tensors["image"] = (tensors["image"] - self._mean) / self._std

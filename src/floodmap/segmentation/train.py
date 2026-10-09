@@ -250,6 +250,9 @@ def run_training(
 
     statistics = resolve_statistics(config)
     augmentation = GeometricAugmentation.from_config(config.augmentation)
+    # One settings object, shared by both splits, so train and validation are
+    # warped by identical spatial parameters.
+    reprojection = config.reprojection if config.reprojection.enabled else None
 
     train_dataset = KuroSiwoSarDataset(
         adapter,
@@ -258,6 +261,7 @@ def run_training(
         augmentation=augmentation,
         limit=config.dataset.limit_train,
         ignore_index=config.dataset.ignore_index,
+        reprojection=reprojection,
     )
     # Augmentation is deliberately NOT passed to validation: a flipped
     # validation tile scores a different, unrepeatable number each epoch.
@@ -268,6 +272,7 @@ def run_training(
         augmentation=None,
         limit=config.dataset.limit_validation,
         ignore_index=config.dataset.ignore_index,
+        reprojection=reprojection,
     )
     if len(train_dataset) == 0:
         raise RuntimeError(
@@ -417,6 +422,11 @@ def run_training(
             "device_availability": available_devices(),
             "channel_order": list(CHANNEL_ORDER),
             "flood_class_id": FLOOD_CLASS_ID,
+            "spatial_preprocessing": {
+                "reprojected_to_canonical_grid": reprojection is not None,
+                "shared_implementation": "floodmap.preprocessing.reprojection",
+                "settings": None if reprojection is None else reprojection.model_dump(mode="json"),
+            },
             "statistics_identity": statistics_identity,
             "train_dataset": train_dataset.identity(),
             "validation_dataset": val_dataset.identity(),

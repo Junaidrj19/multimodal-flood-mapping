@@ -32,18 +32,39 @@ from .pipeline import (
     validate_preprocessing_pair_alignment,
 )
 
+from .reprojection import (
+    CANONICAL_RESOLUTION_M,
+    NodataPolicy,
+    ReprojectionResult,
+    linear_to_db_after_resampling,
+    reproject_categorical,
+    reproject_continuous,
+    target_grid_for_bounds,
+    target_grid_for_source,
+    utm_epsg_for_lonlat,
+)
+
 __all__ = [
     "AlignmentReport",
     "AnalysisGrid",
+    "CANONICAL_RESOLUTION_M",
     "ManifestSourceProduct",
+    "NodataPolicy",
     "PreprocessingConfig",
     "PreprocessingInputs",
     "ProcessedArtifact",
+    "ReprojectionResult",
     "compare_grids",
+    "linear_to_db_after_resampling",
     "load_preprocessing_config",
     "preprocess_dem",
     "preprocess_sentinel1_pair",
     "preprocess_sentinel2_pair",
+    "reproject_categorical",
+    "reproject_continuous",
     "require_aligned",
+    "target_grid_for_bounds",
+    "target_grid_for_source",
+    "utm_epsg_for_lonlat",
     "validate_preprocessing_pair_alignment",
 ]

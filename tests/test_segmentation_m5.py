@@ -1213,3 +1213,368 @@ class TestCheckpoints:
         assert not (tmp_path / "blocked").exists() or not list(
             (tmp_path / "blocked").glob("*.pt")
         )
+
+
+# ---------------------------------------------------------------------------
+# Canonical-grid reprojection in the training path
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalGridReprojection:
+    """The M5 side of the shared spatial component.
+
+    These exercise the real ``KuroSiwoSarDataset`` path, so they cover the
+    adaptation from a ``CanonicalSample`` as well as the warp itself.
+    """
+
+    def _settings(self, **overrides):
+        from floodmap.segmentation.config import ReprojectionSection
+
+        payload = {
+            "enabled": True,
+            "resolution_m": 10.0,
+            "tile_size": 32,
+            "sar_resampling": "bilinear",
+            "label_resampling": "nearest",
+            "nodata_mode": "strict",
+        }
+        payload.update(overrides)
+        return ReprojectionSection.model_validate(payload)
+
+    def test_source_grid_is_web_mercator_with_projected_unit_pixels(self, canonical_sample):
+        """The premise: the delivered grid is NOT 10 m true ground."""
+        from floodmap.segmentation import source_grid_for_sample
+
+        grid = source_grid_for_sample(canonical_sample)
+        assert grid.crs == "EPSG:3857"
+        assert grid.resolution_m == 10.0  # projected units, not metres
+        assert (grid.height, grid.width) == canonical_sample.source_shape
+
+    def test_reprojection_produces_a_real_utm_grid(self, canonical_sample):
+        from floodmap.segmentation import reproject_canonical_sample
+
+        out = reproject_canonical_sample(canonical_sample, resolution_m=10.0, tile_size=32)
+        assert out.grid.crs.startswith("EPSG:326") or out.grid.crs.startswith("EPSG:327")
+        assert out.grid.crs != "EPSG:3857"
+        assert out.grid.resolution_m == 10.0
+        assert (out.grid.height, out.grid.width) == (32, 32)
+        assert out.provenance["target_resolution_is_true_ground"] is True
+        assert out.provenance["source_resolution_is_true_ground"] is False
+
+    def test_payload_shapes_dtypes_and_alignment(self, canonical_sample):
+        from floodmap.segmentation import reproject_canonical_sample
+
+        out = reproject_canonical_sample(canonical_sample, tile_size=32)
+        assert out.image.shape == (4, 32, 32)
+        assert out.image.dtype == np.float32
+        assert out.target.shape == (32, 32)
+        assert out.target.dtype == np.int64
+        assert out.valid_mask.shape == (32, 32)
+        assert out.valid_mask.dtype == np.bool_
+
+    def test_classes_and_ignore_index_survive_reprojection(self, canonical_sample):
+        from floodmap.segmentation import reproject_canonical_sample
+
+        out = reproject_canonical_sample(canonical_sample, tile_size=32)
+        assert set(np.unique(out.target[out.valid_mask])).issubset({0, 1, 2})
+        assert set(np.unique(out.target[~out.valid_mask])).issubset({IGNORE_INDEX})
+        assert IGNORE_INDEX not in set(np.unique(out.target[out.valid_mask]))
+
+    def test_no_nodata_sentinel_survives_on_a_valid_pixel(self, canonical_sample):
+        from floodmap.segmentation import reproject_canonical_sample
+        from floodmap.segmentation.spatial import SAR_NODATA
+
+        out = reproject_canonical_sample(canonical_sample, tile_size=32)
+        on_valid = out.image[:, out.valid_mask]
+        assert on_valid.size > 0
+        assert not np.any(on_valid == SAR_NODATA)
+        assert bool(np.isfinite(on_valid).all())
+        assert np.all(out.image[:, ~out.valid_mask] == SAR_NODATA)
+
+    def test_one_mask_governs_all_four_channels_and_the_target(self, canonical_sample):
+        from floodmap.segmentation import reproject_canonical_sample
+        from floodmap.segmentation.spatial import SAR_NODATA
+
+        out = reproject_canonical_sample(canonical_sample, tile_size=32)
+        per_channel = [(out.image[c] == SAR_NODATA) for c in range(4)]
+        for channel in per_channel[1:]:
+            np.testing.assert_array_equal(channel, per_channel[0])
+        np.testing.assert_array_equal(per_channel[0], ~out.valid_mask)
+        np.testing.assert_array_equal(out.target == IGNORE_INDEX, ~out.valid_mask)
+
+    def test_reprojection_does_not_convert_to_db(self, canonical_sample):
+        """The baseline stays in linear sigma0 through the warp."""
+        from floodmap.segmentation import reproject_canonical_sample
+
+        out = reproject_canonical_sample(canonical_sample, tile_size=32)
+        assert out.provenance["db_conversion_applied"] is False
+        assert out.provenance["representation"] == "linear_sigma0"
+        on_valid = out.image[:, out.valid_mask]
+        # Linear sigma0 clipped at 0.15 is non-negative and small; decibel
+        # backscatter would be strongly negative.
+        assert float(on_valid.min()) >= 0.0
+        assert float(on_valid.max()) <= 0.15 + 1e-6
+
+    def test_sar_is_bilinear_and_labels_are_nearest(self, canonical_sample):
+        from floodmap.segmentation import reproject_canonical_sample
+
+        out = reproject_canonical_sample(canonical_sample, tile_size=32)
+        assert out.provenance["sar"]["resampling"] == "bilinear"
+        assert out.provenance["labels"]["resampling"] == "nearest"
+        assert out.provenance["sar"]["domain"] == "linear_power"
+        assert out.provenance["sar"]["db_conversion_applied_before_resampling"] is False
+
+    def test_a_decibel_sample_is_refused(self, canonical_sample):
+        import dataclasses
+
+        from floodmap.segmentation import reproject_canonical_sample
+        from floodmap.segmentation.tensors import TensorContractError
+
+        decibel = dataclasses.replace(canonical_sample, sar_representation="decibel")
+        with pytest.raises(TensorContractError, match="linear_sigma0"):
+            reproject_canonical_sample(decibel, tile_size=32)
+
+    def test_fixed_tile_size_makes_samples_batchable(self, adapter):
+        """Without a fixed size the per-activation output shape varies."""
+        settings = self._settings(tile_size=32)
+        train = KuroSiwoSarDataset(adapter, "train", reprojection=settings)
+        validation = KuroSiwoSarDataset(adapter, "validation", reprojection=settings)
+
+        batch = collate_samples([train[0], train[1], validation[0]])
+        assert batch["image"].shape == (3, 4, 32, 32)
+        assert batch["target"].shape == (3, 32, 32)
+        assert batch["valid_mask"].shape == (3, 32, 32)
+
+    def test_dataset_reprojection_changes_the_grid_not_the_contract(self, adapter):
+        settings = self._settings(tile_size=32)
+        plain = KuroSiwoSarDataset(adapter, "train")[0]
+        warped = KuroSiwoSarDataset(adapter, "train", reprojection=settings)[0]
+
+        assert plain["image"].shape == (4, TILE, TILE)
+        assert warped["image"].shape == (4, 32, 32)
+        for item in (plain, warped):
+            assert item["image"].dtype == torch.float32
+            assert item["target"].dtype == torch.int64
+            assert item["valid_mask"].dtype == torch.bool
+            valid = item["valid_mask"].numpy()
+            target = item["target"].numpy()
+            assert set(np.unique(target[valid])).issubset({0, 1, 2})
+            assert np.all(target[~valid] == IGNORE_INDEX)
+
+    def test_reprojection_is_recorded_in_dataset_identity(self, adapter):
+        settings = self._settings(tile_size=32)
+        off = KuroSiwoSarDataset(adapter, "train").identity()
+        on = KuroSiwoSarDataset(adapter, "train", reprojection=settings).identity()
+
+        assert off["reprojected_to_canonical_grid"] is False
+        assert off["spatial_transform"] is None
+        assert on["reprojected_to_canonical_grid"] is True
+        assert on["spatial_transform"]["resolution_m"] == 10.0
+        assert on["spatial_transform"]["tile_size"] == 32
+        assert on["spatial_transform"]["nodata_mode"] == "strict"
+        assert (
+            on["spatial_transform"]["shared_implementation"]
+            == "floodmap.preprocessing.reprojection"
+        )
+
+    def test_a_tiny_training_step_runs_on_reprojected_tiles(self, adapter):
+        """End to end: the warped grid feeds the model, loss and optimizer."""
+        settings = self._settings(tile_size=32)
+        dataset = KuroSiwoSarDataset(
+            adapter, "train", statistics=development_statistics(), reprojection=settings
+        )
+        loader = torch.utils.data.DataLoader(
+            dataset, batch_size=2, collate_fn=collate_samples
+        )
+        model = UNet(base_channels=8, depth=2, seed=0)
+        before = [p.detach().clone() for p in model.parameters()]
+        stats = train_one_epoch(
+            model=model,
+            loader=loader,
+            criterion=build_loss(),
+            optimizer=torch.optim.Adam(model.parameters(), lr=0.01),
+            device=torch.device("cpu"),
+            max_steps=1,
+        )
+        assert stats["steps"] == 1
+        assert np.isfinite(stats["loss"])
+        assert any(
+            not torch.equal(old, new) for old, new in zip(before, model.parameters())
+        )
+
+
+class TestTrainingAndInferenceShareOnePath:
+    """Phase 4 item 8: identical preprocessing on both paths."""
+
+    def test_the_training_path_calls_the_m2_shared_component(self, canonical_sample):
+        """Byte-identical output from the training path and a direct M2-style call.
+
+        The training path goes CanonicalSample -> segmentation.spatial ->
+        preprocessing.reprojection. The inference path goes raster ->
+        preprocessing.pipeline._reproject_to_grid -> the same function. Calling
+        the shared function directly with the same grids must reproduce what
+        training produced, bit for bit.
+        """
+        from floodmap.preprocessing.reprojection import (
+            NodataPolicy,
+            reproject_continuous,
+            target_grid_for_source,
+        )
+        from floodmap.segmentation import (
+            reproject_canonical_sample,
+            source_grid_for_sample,
+            stack_channels,
+        )
+        from floodmap.segmentation.spatial import SAR_NODATA
+
+        training = reproject_canonical_sample(canonical_sample, tile_size=32)
+
+        source = source_grid_for_sample(canonical_sample)
+        target = target_grid_for_source(source, resolution_m=10.0, tile_size=32)
+        direct = reproject_continuous(
+            stack_channels(canonical_sample),
+            np.asarray(canonical_sample.validity, dtype=bool),
+            source=source,
+            target=target,
+            resampling_name="bilinear",
+            nodata=SAR_NODATA,
+            nodata_policy=NodataPolicy("strict"),
+            domain="linear_power",
+        )
+
+        assert training.grid.crs == direct.grid.crs
+        assert tuple(training.grid.transform[:6]) == tuple(direct.grid.transform[:6])
+        # Training additionally intersects with the label footprint, so its
+        # valid set is a subset; where both are valid the values must match
+        # exactly, not approximately.
+        shared = training.valid_mask & direct.valid
+        assert int(shared.sum()) > 0
+        np.testing.assert_array_equal(
+            training.image[:, shared], direct.data[:, shared]
+        )
+
+    def test_m2_pipeline_delegates_rather_than_reimplementing_the_warp(self):
+        """Structural guard against the two paths drifting apart.
+
+        A second local ``reproject(...)`` loop inside the M2 pipeline is exactly
+        how training and inference would diverge while both looked correct, so
+        its absence is asserted rather than assumed.
+        """
+        pipeline = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "floodmap"
+            / "preprocessing"
+            / "pipeline.py"
+        ).read_text(encoding="utf-8")
+        assert "from .reprojection import" in pipeline
+        assert "reproject_continuous(" in pipeline
+        # The old hand-rolled warp called rasterio's reproject directly.
+        assert "reproject(\n" not in pipeline
+        assert "dst_crs=" not in pipeline
+
+    def test_both_paths_agree_on_the_target_grid_for_one_source(self, canonical_sample):
+        from floodmap.preprocessing.reprojection import target_grid_for_bounds
+        from floodmap.segmentation import source_grid_for_sample
+
+        source = source_grid_for_sample(canonical_sample)
+        from_source = target_grid_for_bounds(
+            bounds=source.bounds, source_crs=source.crs, tile_size=32
+        )
+        from_sample = reproject_canonical_sample_grid(canonical_sample)
+        assert from_source.crs == from_sample.crs
+        assert tuple(from_source.transform[:6]) == tuple(from_sample.transform[:6])
+
+    def test_statistics_fitting_uses_the_same_spatial_transform(self, adapter):
+        """Phase 5 precondition: statistics must describe the training arrays.
+
+        A std fitted before resampling does not describe resampled input --
+        bilinear changes the variance of the field it is applied to -- so the
+        fitter must accept and record the same reprojection settings.
+        """
+        from floodmap.segmentation.config import ReprojectionSection
+
+        settings = ReprojectionSection.model_validate(
+            {"enabled": True, "tile_size": 32, "nodata_mode": "strict"}
+        )
+        dataset = KuroSiwoSarDataset(adapter, "train")
+        samples = [dataset.load_canonical(i) for i in range(len(dataset))]
+
+        plain = fit_training_statistics(samples)
+        warped = fit_training_statistics(samples, reprojection=settings)
+
+        assert plain.provenance["spatial_transform"]["reprojected_to_canonical_grid"] is False
+        assert warped.provenance["spatial_transform"]["reprojected_to_canonical_grid"] is True
+        assert warped.provenance["spatial_transform"]["tile_size"] == 32
+        assert (
+            warped.provenance["spatial_transform"]["shared_implementation"]
+            == "floodmap.preprocessing.reprojection"
+        )
+        # Resampling changes the statistics, which is the whole reason the
+        # setting has to be recorded rather than assumed.
+        assert not np.allclose(plain.std_vector(), warped.std_vector())
+
+
+def reproject_canonical_sample_grid(sample):
+    """The realised target grid for a sample, for cross-path comparison."""
+    from floodmap.segmentation import reproject_canonical_sample
+
+    return reproject_canonical_sample(sample, tile_size=32).grid
+
+
+class TestReprojectionConfiguration:
+    def test_the_baseline_config_enables_reprojection_with_a_fixed_tile(self):
+        config = load_experiment("m5_kuro_sar_unet")
+        assert config.reprojection.enabled is True
+        assert config.reprojection.resolution_m == 10.0
+        assert config.reprojection.tile_size == 224
+        assert config.reprojection.sar_resampling == "bilinear"
+        assert config.reprojection.label_resampling == "nearest"
+        assert config.reprojection.nodata_mode == "strict"
+
+    def test_enabling_reprojection_without_a_tile_size_is_rejected(self):
+        payload = load_experiment("m5_kuro_sar_unet").model_dump()
+        payload["reprojection"]["tile_size"] = None
+        with pytest.raises(ValueError, match="tile_size is required"):
+            ExperimentConfig.model_validate(payload)
+
+    def test_nearest_sar_resampling_is_rejected(self):
+        payload = load_experiment("m5_kuro_sar_unet").model_dump()
+        payload["reprojection"]["sar_resampling"] = "nearest"
+        with pytest.raises(ValueError, match="averaging method"):
+            ExperimentConfig.model_validate(payload)
+
+    def test_bilinear_label_resampling_is_rejected(self):
+        payload = load_experiment("m5_kuro_sar_unet").model_dump()
+        payload["reprojection"]["label_resampling"] = "bilinear"
+        with pytest.raises(ValueError, match="invents classes"):
+            ExperimentConfig.model_validate(payload)
+
+    def test_an_unknown_nodata_mode_is_rejected(self):
+        payload = load_experiment("m5_kuro_sar_unet").model_dump()
+        payload["reprojection"]["nodata_mode"] = "permissive"
+        with pytest.raises(ValueError, match="strict.*majority"):
+            ExperimentConfig.model_validate(payload)
+
+    def test_the_run_record_states_whether_reprojection_happened(self, adapter, tmp_path):
+        config = load_experiment("m5_kuro_sar_unet_dev")
+        result = run_training(config, adapter=adapter, run_dir=tmp_path / "run")
+        record = json.loads(result.run_record_path.read_text(encoding="utf-8"))
+        spatial = record["spatial_preprocessing"]
+        assert spatial["reprojected_to_canonical_grid"] is False
+        assert spatial["shared_implementation"] == "floodmap.preprocessing.reprojection"
+
+    def test_a_reprojected_run_records_its_settings(self, adapter, tmp_path):
+        payload = load_experiment("m5_kuro_sar_unet_dev").model_dump()
+        payload["reprojection"]["enabled"] = True
+        payload["reprojection"]["tile_size"] = 32
+        config = ExperimentConfig.model_validate(payload)
+
+        result = run_training(config, adapter=adapter, run_dir=tmp_path / "run")
+        record = json.loads(result.run_record_path.read_text(encoding="utf-8"))
+        spatial = record["spatial_preprocessing"]
+        assert spatial["reprojected_to_canonical_grid"] is True
+        assert spatial["settings"]["tile_size"] == 32
+        assert spatial["settings"]["nodata_mode"] == "strict"
+        assert record["train_dataset"]["reprojected_to_canonical_grid"] is True
+        assert record["validation_dataset"]["reprojected_to_canonical_grid"] is True

@@ -1244,9 +1244,27 @@ class TestTheFreezeStaysADecisionRecord:
             "metrics.py",
             "model.py",
             "normalization.py",
+            "spatial.py",
             "tensors.py",
             "train.py",
         ], f"unexpected M5 segmentation module set: {modules}"
+
+    def test_the_segmentation_package_does_not_reimplement_reprojection(self):
+        """Spatial transformation is shared with M2, not duplicated here.
+
+        ``segmentation/spatial.py`` adapts a CanonicalSample to the shared
+        component's arguments and must not grow its own warp: training and
+        inference resampling differently is the failure this guards, and it
+        would be invisible because both paths would look individually correct.
+        """
+        spatial = (
+            REPO_ROOT / "src" / "floodmap" / "segmentation" / "spatial.py"
+        ).read_text(encoding="utf-8")
+        assert "from floodmap.preprocessing.reprojection import" in spatial
+        for forbidden in ("rasterio.warp", "dst_crs=", "src_transform="):
+            assert forbidden not in spatial, (
+                f"segmentation must not warp directly: found {forbidden!r}"
+            )
 
     def test_no_model_architecture_is_selected(self):
         """A measured baseline is a candidate, not the project's choice.

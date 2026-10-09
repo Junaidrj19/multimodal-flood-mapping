@@ -49,6 +49,18 @@ dataset:
   limit_train: 4
   limit_validation: 4
 
+# Reprojection is exercised by its own dedicated tests rather than by every
+# smoke run: warping six planes per sample is the dominant cost in a tiny run,
+# and the smoke test's job is to prove the train loop executes. The real
+# baseline config enables it.
+reprojection:
+  enabled: false
+  resolution_m: 10.0
+  tile_size: 224
+  sar_resampling: "bilinear"
+  label_resampling: "nearest"
+  nodata_mode: "strict"
+
 dataloader:
   batch_size: 2
   # 0 workers: the test suite must not fork worker processes.

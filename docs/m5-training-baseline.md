@@ -549,19 +549,170 @@ weakened by the filter.
    official training activations, with 1111004 alone contributing 71% of
    available training tiles. Geographically skewed.
 
-5. **No resampling to the canonical grid.** M5 trains on the source 224×224
-   EPSG:3857 tiles as the M4 adapter presents them. The canonical 10 m UTM
-   target grid (C1/C2) is recorded on each sample but is a later preprocessing
-   concern; this is a train/serve difference that must be resolved before
-   production inference.
+5. **Spatial reprojection is implemented and shared with M2** (added
+   2026-10-09). Kuro is delivered on an EPSG:3857 grid whose pixels are 10
+   PROJECTED units (8.736–9.798 m true ground across the five delivered
+   activations), while production inference serves genuinely 10 m Sentinel-1.
+   `floodmap.preprocessing.reprojection` now warps to a per-sample 10 m UTM
+   grid and is called by both paths. The real baseline config enables it; see
+   §15. The previously recorded train/serve spatial mismatch is **resolved in
+   code**, but no run has yet been performed with it.
 
 6. **Determinism is partial** — cuDNN flags only, not
    `use_deterministic_algorithms`. See §8.2.
 
+7. **Two source samples are malformed and currently block a full training
+   pass.** 2 of 7,103 samples contain NaN in SAR pixels that all three Kuro
+   validity mechanisms declare valid. The adapter refuses them loudly, which is
+   correct. Evidence, recovery assessment and a proposed quarantine policy are
+   in `docs/m5-source-data-quarantine.md`. **The policy is not activated** and
+   no sample is excluded. Neither affected sample is in the validation or test
+   split.
+
 ---
 
-## 14. Next step
+## 15. Shared spatial reprojection
 
-Fit training statistics over the available training split, then run the real
-baseline. Reporting any flood-IoU number as a result additionally requires
-resolving limitation 1.
+Added 2026-10-09. `src/floodmap/preprocessing/reprojection.py`.
+
+### 15.1 Why one implementation
+
+Training and inference resampling differently is a defect that hides itself:
+both paths look individually reasonable, and every metric measured in training
+would describe a grid the deployed model never sees. So there is one module,
+called by both:
+
+```
+M2 production:  raster -> pipeline._reproject_to_grid -> reprojection.reproject_continuous
+M5 training:    CanonicalSample -> segmentation.spatial -> reprojection.reproject_continuous
+```
+
+Two tests enforce this rather than trusting it: one asserts the training path
+and a direct M2-style call produce **bit-identical** values on shared valid
+pixels; another is a structural guard that neither `preprocessing/pipeline.py`
+nor `segmentation/spatial.py` contains its own `rasterio.warp` call.
+
+### 15.2 Source to target
+
+| | Source (delivered) | Target (canonical) |
+|---|---|---|
+| CRS | EPSG:3857 | per-sample WGS84/UTM (EPSG:326xx / 327xx) |
+| Pixel size | 10 **projected units** | 10.0 m **true ground** |
+| True ground | 8.736–9.798 m measured; ~5 m near 60N | 10.0 m |
+| Size | 224 × 224 | 224 × 224 (fixed) |
+
+The UTM zone comes from the sample footprint centroid:
+`floor((lon + 180) / 6) + 1`, clamped to [1, 60] so longitude 180 cannot index
+a zone 61; hemisphere from the sign of latitude with the equator assigned
+north. Boundary behaviour is tested explicitly, including ±180 and exact
+6-degree multiples.
+
+A **concrete** `AnalysisGrid` is built — CRS, affine transform, width, height,
+resolution. Target-grid metadata alone is not reprojection, and the M4 adapter
+was explicit that it only recorded metadata.
+
+**Resampling, per C3:** SAR bilinear **in linear sigma0 power**; labels and
+validity **nearest neighbour**. `reproject_continuous` refuses an averaging
+method on `domain="db"` input, and `reproject_categorical` refuses an averaging
+method outright — bilinear across a 0/2 label boundary yields 1, which in this
+scheme is "Permanent Waters".
+
+**Fixed tile size.** Resampling a 224 px tile to 10 m gives a footprint-sized
+output that varies per activation — measured 219×220, 220×222, 201×203,
+216×217, 217×218 — and variable shapes cannot be collated into a batch. 224 is
+chosen as the smallest `2**depth`-divisible size that crops **no** activation
+(largest natural footprint 222). Area outside the footprint is marked invalid,
+never filled. A smaller value such as 208 would waste less area on activation
+1111004 but would crop the other four, and cropping discards real labelled
+observations whereas padding only adds pixels that `ignore_index` excludes
+anyway.
+
+### 15.3 Nodata policy
+
+**The problem.** Kuro stores invalid SAR as `0.0`. Once that enters a bilinear
+kernel it is indistinguishable from genuine near-zero backscatter — which is
+precisely the open-water signal this model is trying to detect. Masking the
+output afterwards is insufficient: it cleans pixels that are *themselves*
+invalid while leaving valid pixels that absorbed an invalid neighbour. That was
+the behaviour of the previous M2 implementation.
+
+**The policy — `strict`, two independent mechanisms:**
+
+1. Invalid source samples are set to NaN and declared as the warp's
+   `src_nodata` **before** interpolation, so they are excluded from the kernel
+   rather than averaged in as a value.
+2. The validity mask is independently warped as a float coverage field using
+   the **same** method as the data. A target pixel is valid only if its
+   interpolated weight is 1.0 within tolerance — i.e. its entire kernel drew on
+   valid source pixels.
+
+The second mechanism is what makes the guarantee provable rather than a
+property of GDAL's internal nodata handling.
+
+`majority` (weight > 0.5) is implemented and **not used**, because selecting it
+should be a recorded decision. Measured on one tile per activation, `strict`
+costs only **0.0–0.8%** more valid pixels than `majority` — the conservative
+choice is nearly free.
+
+Invalid output carries −9999.0 (the frozen continuous nodata, C9), never 0.0,
+so a sentinel can never be read back as zero backscatter. Tests assert that no
+surviving valid pixel holds a value between the sentinel and the true source
+value.
+
+### 15.4 Alignment
+
+All four SAR channels, the label raster and the validity mask are warped onto
+the **same** concrete grid. The final mask is the **intersection** of the SAR
+and label valid footprints: the two use different resampling methods, so their
+footprints differ at the fringe, and intersecting is what keeps image, target
+and mask describing the same pixels. Tests assert one shared validity footprint
+across all four channels and the target.
+
+### 15.5 M2 ordering defect found and fixed
+
+`preprocess_sentinel1_pair` converted linear backscatter to decibels **before**
+calling `_reproject_to_grid`, so bilinear/average resampling averaged
+logarithms. That is not the mean of the underlying power and is biased low —
+exactly what `configs/preprocessing.yaml` has always declared
+(`sar_domain: linear_power`, `sar_resample_before_db_conversion: true`, pinned
+by `test_contract_freeze.py:286`). The implementation contradicted its own
+declared policy.
+
+Fixed by resampling in linear power and converting afterwards via
+`linear_to_db_after_resampling`, which delegates to the existing M3
+`numerics.linear_to_db`. The ordering is recorded in the artifact's
+`preprocessing_operations` (`resample_in_linear_power` before
+`linear_to_db_after_resampling`), so it is auditable from the output rather
+than only from a source comment.
+
+**Magnitude, measured.** Averaging 0.01 and 1.0 linear gives 0.505 → −2.967 dB.
+Averaging their decibel forms (−20, 0) gives −10 dB. A **7.03 dB** error, in
+the biased-low direction — toward the water-like values the model keys on. The
+regression test asserts the correct value and explicitly asserts the result is
+*not* the defective one.
+
+### 15.6 Statistics implication
+
+`fit_training_statistics` now accepts and records the reprojection settings.
+This is not bookkeeping: bilinear resampling changes the variance of the field
+it is applied to, so a std fitted before resampling does not describe
+post-resampling input. A test asserts the fitted std actually differs between
+the two paths, so the recorded setting cannot be vacuous.
+
+**Consequence for Phase 5:** statistics must be fitted with the same
+`reprojection` block the training run will use. They remain unfitted.
+
+---
+
+## 16. Next step
+
+Statistics and training remain blocked, in this order:
+
+1. resolve the source-data quarantine decision
+   (`docs/m5-source-data-quarantine.md` §3.4);
+2. fit training statistics with the reprojection settings the run will use;
+3. then run the baseline.
+
+Reporting any flood-IoU number as a result additionally requires resolving
+limitation 1 (validation is one activation, 19 tiles).
+
