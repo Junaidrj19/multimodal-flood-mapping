@@ -15,6 +15,14 @@ The primary reported number is flood-class IoU (class 2), per C6. Per-class
 IoU, precision, recall, F1, macro/micro aggregates and the full matrix are all
 computed too, because a single headline score hides the error pattern
 (``AGENTS.md`` §6).
+
+Zero-denominator policy is explicit. Per-class IoU, precision and recall are
+``nan`` when their denominator is zero, because the corresponding quantity is
+undefined. F1 is calculated directly from the confusion counts: a class with
+any support or prediction has a defined F1, including ``0.0`` when true
+positives are zero; a class absent from both truth and prediction remains
+``nan`` and is omitted from macro F1. Micro IoU is pooled over class unions,
+while pixel accuracy is reported separately.
 """
 
 from __future__ import annotations
@@ -70,10 +78,12 @@ class MetricResult:
 class SegmentationMetrics:
     """Accumulate a confusion matrix across batches, then derive metrics.
 
-    ``nan`` is used for a class with no support, and such classes are dropped
-    from macro aggregates rather than counted as zero. Scoring an absent class
-    as 0.0 would drag mean IoU down by a third on a tile that simply contains
-    no permanent water, which is a property of the tile and not of the model.
+    A ratio whose denominator is zero is ``nan`` because that quantity is
+    undefined. Such genuinely absent classes are dropped from macro
+    aggregates rather than counted as zero. A class that has support or false
+    positives but no true positives is not absent: its F1 is therefore 0.0.
+    Micro IoU is the pooled intersection over the pooled union, not pixel
+    accuracy; both values are reported separately.
     """
 
     def __init__(
@@ -172,12 +182,13 @@ class SegmentationMetrics:
         iou = _ratio(true_positive, union)
         precision = _ratio(true_positive, predicted)
         recall = _ratio(true_positive, support)
-        f1_denominator = precision + recall
-        f1 = torch.full_like(precision, float("nan"))
-        valid_f1 = torch.isfinite(f1_denominator) & (f1_denominator > 0)
-        f1[valid_f1] = (
-            2.0 * precision[valid_f1] * recall[valid_f1] / f1_denominator[valid_f1]
+        # Calculate F1 directly from counts rather than from precision and
+        # recall. A supported class with no predictions has undefined
+        # precision but a defined F1 of 0.0 when it has no true positives.
+        f1_denominator = 2.0 * true_positive + (predicted - true_positive) + (
+            support - true_positive
         )
+        f1 = _ratio(2.0 * true_positive, f1_denominator)
 
         def _named(values: torch.Tensor) -> Dict[str, float]:
             return {
@@ -186,6 +197,8 @@ class SegmentationMetrics:
             }
 
         total = float(matrix.sum().item())
+        true_positive_total = float(true_positive.sum().item())
+        union_total = float(union.sum().item())
         flood_iou = float(iou[FLOOD_CLASS_ID].item()) if FLOOD_CLASS_ID < self.num_classes else float("nan")
 
         return MetricResult(
@@ -201,8 +214,8 @@ class SegmentationMetrics:
             iou_flood_class=flood_iou,
             mean_iou=_nanmean(iou),
             macro_f1=_nanmean(f1),
-            micro_iou=(float(true_positive.sum().item()) / total) if total else float("nan"),
-            pixel_accuracy=(float(true_positive.sum().item()) / total) if total else float("nan"),
+            micro_iou=(true_positive_total / union_total) if union_total else float("nan"),
+            pixel_accuracy=(true_positive_total / total) if total else float("nan"),
             n_valid_pixels=int(matrix.sum().item()),
             n_ignored_pixels=int(self._ignored),
         )

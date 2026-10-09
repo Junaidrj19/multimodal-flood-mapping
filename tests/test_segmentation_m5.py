@@ -605,6 +605,74 @@ class TestMetrics:
         assert result.per_class_recall["Floods"] == pytest.approx(2.0 / 3.0)
         assert result.per_class_f1["Floods"] == pytest.approx(2.0 / 3.0)
 
+    def test_all_metrics_match_a_hand_calculated_confusion_matrix(self):
+        """Derived metrics use truth rows and prediction columns exactly."""
+        metrics = SegmentationMetrics()
+        target = torch.tensor([[0, 0, 1, 1, 2, 2, 2]])
+        prediction = torch.tensor([[0, 1, 0, 0, 2, 0, 1]])
+        metrics.update(prediction, target, is_prediction=True)
+
+        result = metrics.compute()
+        expected_matrix = torch.tensor(
+            [[1, 1, 0], [2, 0, 0], [1, 1, 1]], dtype=torch.int64
+        )
+        torch.testing.assert_close(result.confusion_matrix, expected_matrix)
+
+        # Class 0: TP=1, FP=3, FN=1. Class 1: TP=0, FP=2, FN=2.
+        # Class 2: TP=1, FP=0, FN=2.
+        assert result.per_class_iou["No water"] == pytest.approx(1.0 / 5.0)
+        assert result.per_class_iou["Permanent Waters"] == pytest.approx(0.0)
+        assert result.per_class_iou["Floods"] == pytest.approx(1.0 / 3.0)
+        assert result.per_class_precision["No water"] == pytest.approx(1.0 / 4.0)
+        assert result.per_class_precision["Permanent Waters"] == pytest.approx(0.0)
+        assert result.per_class_precision["Floods"] == pytest.approx(1.0)
+        assert result.per_class_recall["No water"] == pytest.approx(1.0 / 2.0)
+        assert result.per_class_recall["Permanent Waters"] == pytest.approx(0.0)
+        assert result.per_class_recall["Floods"] == pytest.approx(1.0 / 3.0)
+        assert result.per_class_f1["No water"] == pytest.approx(1.0 / 3.0)
+        assert result.per_class_f1["Permanent Waters"] == pytest.approx(0.0)
+        assert result.per_class_f1["Floods"] == pytest.approx(1.0 / 2.0)
+        assert result.iou_flood_class == pytest.approx(1.0 / 3.0)
+        assert result.mean_iou == pytest.approx((1.0 / 5.0 + 0.0 + 1.0 / 3.0) / 3.0)
+        assert result.macro_f1 == pytest.approx((1.0 / 3.0 + 0.0 + 1.0 / 2.0) / 3.0)
+        # Pooled TP=2; pooled union=5+4+3=12.
+        assert result.micro_iou == pytest.approx(1.0 / 6.0)
+        assert result.pixel_accuracy == pytest.approx(2.0 / 7.0)
+
+    def test_supported_class_with_zero_true_positives_has_zero_f1(self):
+        """Undefined component ratios do not make a present class F1 NaN."""
+        metrics = SegmentationMetrics()
+        metrics.update(
+            torch.tensor([[0, 0, 2]]),
+            torch.tensor([[0, 1, 2]]),
+            is_prediction=True,
+        )
+        result = metrics.compute()
+
+        # Permanent Waters has support but no prediction: precision is undefined,
+        # recall is zero, and count-based F1 is zero.
+        assert np.isnan(result.per_class_precision["Permanent Waters"])
+        assert result.per_class_recall["Permanent Waters"] == pytest.approx(0.0)
+        assert result.per_class_f1["Permanent Waters"] == pytest.approx(0.0)
+        assert result.per_class_f1["Floods"] == pytest.approx(1.0)
+
+    def test_genuinely_absent_class_stays_nan_and_is_dropped_from_macros(self):
+        """A class absent from truth and prediction remains undefined."""
+        metrics = SegmentationMetrics()
+        metrics.update(
+            torch.tensor([[0, 2]]),
+            torch.tensor([[0, 2]]),
+            is_prediction=True,
+        )
+        result = metrics.compute()
+
+        assert np.isnan(result.per_class_iou["Permanent Waters"])
+        assert np.isnan(result.per_class_precision["Permanent Waters"])
+        assert np.isnan(result.per_class_recall["Permanent Waters"])
+        assert np.isnan(result.per_class_f1["Permanent Waters"])
+        assert result.mean_iou == pytest.approx(1.0)
+        assert result.macro_f1 == pytest.approx(1.0)
+
     def test_ignored_pixels_are_excluded_from_every_metric(self):
         """Adding ignored pixels with arbitrary predictions changes nothing."""
         target = torch.tensor([[2, 2, 0, 1]])
@@ -621,6 +689,8 @@ class TestMetrics:
         padded_result = padded.compute()
 
         assert padded_result.iou_flood_class == pytest.approx(clean_result.iou_flood_class)
+        assert padded_result.micro_iou == pytest.approx(clean_result.micro_iou)
+        assert padded_result.pixel_accuracy == pytest.approx(clean_result.pixel_accuracy)
         torch.testing.assert_close(
             padded_result.confusion_matrix, clean_result.confusion_matrix
         )
@@ -643,14 +713,6 @@ class TestMetrics:
         logits[0, 1, 0, 1] = 10.0
         metrics.update(logits, torch.tensor([[[2, 1]]]))
         assert metrics.compute().iou_flood_class == pytest.approx(1.0)
-
-    def test_a_class_without_support_is_nan_not_zero(self):
-        """An absent class must not drag mean IoU down by a third."""
-        metrics = SegmentationMetrics()
-        metrics.update(torch.tensor([[0, 2]]), torch.tensor([[0, 2]]), is_prediction=True)
-        result = metrics.compute()
-        assert np.isnan(result.per_class_iou["Permanent Waters"])
-        assert result.mean_iou == pytest.approx(1.0)
 
     def test_batches_accumulate_rather_than_average(self):
         pooled = SegmentationMetrics()
