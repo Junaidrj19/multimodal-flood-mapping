@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -137,6 +137,12 @@ class SampleProvenance:
     validity_mechanism: Tuple[str, ...]
     source_files: Tuple[Path, ...]
     artifact: ArtifactProvenance
+    #: Defects found in epochs this baseline DROPS, recorded rather than
+    #: raised. Empty for a clean sample. A dropped epoch is not validated as
+    #: strictly as a consumed one -- its pixels never reach a tensor -- but a
+    #: defect in it must still be visible to an auditor, so it travels with
+    #: the sample instead of being discarded with the epoch.
+    dropped_source_diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -172,6 +178,10 @@ class CanonicalSample:
     preprocessing_state: PreprocessingState
     dropped_sources: Tuple[str, ...] = ()
     auxiliary_rasters: Mapping[str, np.ndarray] = field(default_factory=dict)
+    #: Mirror of ``provenance.dropped_source_diagnostics``, exposed on the
+    #: sample so a consumer does not have to reach into provenance to find out
+    #: that a dropped epoch was defective.
+    dropped_source_diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.labels.shape != self.source_shape:

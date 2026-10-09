@@ -1,10 +1,17 @@
-# Kuro Siwo malformed samples — evidence and proposed quarantine policy
+# Kuro Siwo malformed samples — evidence and resolution
 
-**Status: EVIDENCE RECORDED. POLICY PROPOSED, NOT ACTIVATED.**
+**Status: RESOLVED 2026-10-09.** Sample A is reinstated by narrowing an
+over-broad integrity check; sample B is quarantined by an explicit, versioned
+policy. Both decisions are implemented, tested, and recorded in the audit
+trail of every artifact that depends on them.
 
-No sample is excluded from any split, no statistics artifact has been fitted,
-and `configs/experiments/m5_kuro_sar_unet.yaml` is unchanged by this
-investigation. Activating the policy below is a separate, reviewed decision.
+| Sample | Decision | Mechanism |
+|---|---|---|
+| `1111004:304feeed-…` | **Reinstated** — 4 consumed channels are clean | Finiteness check scoped to consumed epochs; SL2 defect reported in `dropped_source_diagnostics` |
+| `1111004:df3d7e17-…` | **Quarantined** — 464 NaN on consumed channels | `configs/quarantine/kuro_siwo.yaml`, applied to training *and* statistics fitting |
+
+The sections below record the evidence the decisions were made on. §5 records
+what was implemented.
 
 ---
 
@@ -160,7 +167,11 @@ repository making targeted retrieval cheap.
 
 ---
 
-## 3. Proposed quarantine policy — NOT ACTIVATED
+## 3. The policy as proposed — superseded by §5
+
+Retained as the record of what was put up for review. It was adopted with one
+modification: option (b) in §3.4 was taken for sample A rather than option (a).
+Where this section and §5 disagree, §5 is what was implemented.
 
 ### 3.1 Principles
 
@@ -214,11 +225,10 @@ samples:
 | Run record | `quarantined_samples` listed by ID with reason, alongside the sample counts. |
 | Audit report | Excluded samples and reasons reported, never silently dropped. |
 
-### 3.4 Open question for review: sample A
+### 3.4 Open question for review: sample A — RESOLVED, option (b) taken
 
 Sample A's four baseline channels are clean; only the dropped `SL2` epoch is
-affected. Two defensible options, and this is **a decision for review, not one
-to take quietly**:
+affected. Two defensible options were put up:
 
 - **(a) Quarantine both.** Simplest and most conservative. Costs one clean
   sample out of 7,052.
@@ -227,24 +237,15 @@ to take quietly**:
   loads with four clean channels, and `SL2` remains metadata-only as the
   contract already says it is.
 
-Option (b) is arguably more correct — validating a plane that is then discarded
-is an over-broad check — but it changes frozen M4 adapter behaviour, so it
-should not be bundled with a quarantine decision. **Recommendation: adopt (a)
-now, and consider (b) separately on its own merits.**
+**Option (b) was taken.** The deciding evidence is in §5.1: scoping the check
+was verified to leave every other integrity invariant passing, including the
+SAR-zero cross-check with SL2 still participating, so it discards a defective
+check rather than a real guarantee. The SL2 defect is reported rather than
+dropped. See §5.1 for what is now fatal and what is merely recorded.
 
-### 3.5 Measured cost of the proposal
+### 3.5 Measured cost — see §5.3
 
-Under option (a), excluding both samples:
-
-| Split | Total | Quarantined | Remaining |
-|---|---|---|---|
-| train | 7,052 | 2 | 7,050 |
-| validation | 19 | 0 | 19 |
-| test | 32 | 0 | 32 |
-
-0.028% of the training split. **Neither validation nor test is affected**, so
-no reported metric and no checkpoint-selection number is touched by this
-decision either way.
+Under the adopted resolution one sample is excluded, not two.
 
 ---
 
@@ -255,6 +256,107 @@ decision either way.
 - No NaN was replaced, zeroed, or imputed.
 - No sample was silently skipped.
 - `MK0_MNA == 1` validity semantics were not changed.
-- No quarantine config was created; §3.2 is a proposal.
-- No sample was excluded from any experiment config.
 - No dataset was downloaded.
+
+---
+
+## 5. What was implemented — 2026-10-09
+
+### 5.1 Sample A: the integrity check was over-broad
+
+`load_sample` validated finiteness and sign across **all three** temporal
+epochs, then discarded one of them. Scoping the check to the epochs the
+baseline actually consumes was verified safe before being made:
+
+| Check | SL1 (consumed) | MS1 (consumed) | SL2 (dropped) |
+|---|---|---|---|
+| finite and non-negative | ✓ | ✓ | ✗ |
+
+and, critically, **every other integrity invariant still passes** for this
+sample:
+
+| Invariant | All roles | Consumed only |
+|---|---|---|
+| `MLU == 3` equals `~MNA` | ✓ | ✓ |
+| `SAR == 0.0` equals `~MNA` | ✓ (0 mismatched px) | ✓ (0 mismatched px) |
+
+So the narrowing costs nothing in validation strength here: a non-finite value
+is not `0.0`, so it never registered as the SAR nodata sentinel, and the
+SAR-zero cross-check **still includes SL2** and still agrees.
+
+Implemented in `src/floodmap/datasets/kuro_siwo.py`:
+
+- `_CONSUMED_ROLES = ("SL1", "MS1")` — a defect here is **still fatal**, for
+  both polarisations, for both NaN and negative values;
+- `_DROPPED_ROLES = ("SL2",)` — a defect here is **counted, located against the
+  declared validity mask, and attached to the sample** as
+  `dropped_source_diagnostics`, mirrored into
+  `provenance.dropped_source_diagnostics`;
+- the label and validity cross-checks are untouched.
+
+What sample A now reports:
+
+```json
+{"SL2": {"vv": {"non_finite_pixels": 1,
+                "non_finite_on_declared_valid_pixels": 1,
+                "negative_pixels": 0,
+                "consumed_by_baseline": false,
+                "reason": "defect in a dropped pre-event epoch; recorded rather
+                           than fatal because no pixel of this epoch reaches a tensor"},
+         "vh": {"non_finite_pixels": 1, ...}}}
+```
+
+Twelve regression tests were written **before** the change, five of which
+failed against the old behaviour. They pin that a defect in either consumed
+epoch, in either polarisation, as either NaN or a negative value, still raises.
+
+### 5.2 Sample B: explicit quarantine
+
+`configs/quarantine/kuro_siwo.yaml` (committed — sample IDs and reasons only)
+plus `src/floodmap/datasets/quarantine.py`.
+
+Properties, each tested:
+
+- an exclusion requires a `reason_code` drawn from a **closed set declared in
+  the same file**; an undeclared code is rejected at load;
+- a policy without a version, for the wrong `dataset_id`, with a duplicate
+  entry, or with an entry missing `sample_id`/`reason_code`, is rejected;
+- **naming a quarantined sample explicitly raises** (`require_eligible`) rather
+  than returning a shorter list;
+- the audit record is emitted **unconditionally**, so "no policy applied" is
+  distinguishable from "nothing excluded";
+- `require_policy_file: true` in both experiment configs, so a missing policy
+  fails the run instead of silently applying none.
+
+**The same policy governs both eligibility points** — the training dataset and
+the statistics fitter. A sample excluded from training cannot contribute to the
+parameters training normalises with. This is asserted by a test that also
+checks the exclusion actually changes the fitted values, so it cannot pass
+vacuously.
+
+Nothing in the policy touches pixel semantics. A test asserts the policy file
+declares no `ignore_index`, `semantic_values`, `label_mapping`,
+`validity_mechanism` or `nodata_value` key, and that the frozen
+`configs/segmentation.yaml` class block is unchanged.
+
+### 5.3 Measured effect
+
+| Split | Discovered | Quarantined | Eligible |
+|---|---|---|---|
+| train | 7,052 | 1 | **7,051** |
+| validation | 19 | 0 | 19 |
+| test | 32 | 0 | 32 |
+
+0.014% of the training split. **Validation and test are untouched**, so no
+reported metric and no checkpoint-selection number is affected by this decision
+in either direction.
+
+### 5.4 Still true
+
+- No NaN was replaced, zeroed or imputed.
+- No sample is silently skipped — exclusion is by name, with a reason, in the
+  provenance of every artifact that depends on it.
+- Frozen label `{0,1,2}` + stored nodata `3` and validity `MK0_MNA == 1`
+  semantics are unchanged.
+- No recovery download was attempted; §2.3 stands, and the policy records
+  `reinstate_if` so the decision is reversible.

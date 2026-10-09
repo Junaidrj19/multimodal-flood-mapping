@@ -280,12 +280,58 @@ def _provenance(
     return record
 
 
+def _quarantine_record(
+    quarantine: Optional[object],
+    skipped: Sequence[Mapping[str, Any]],
+    eligibility: Optional[object],
+) -> Dict[str, Any]:
+    """Merge exclusions the fitter skipped with exclusions the caller pre-filtered.
+
+    Both sources are real. The fitter skips a quarantined sample it is handed;
+    a caller streaming from disk must pre-filter, because a quarantined sample
+    may be unloadable and would raise before the fitter saw it. Reporting only
+    one of the two would understate the audit trail.
+    """
+
+    entries = [dict(entry) for entry in skipped]
+    seen = {entry.get("sample_id") for entry in entries}
+    if eligibility is not None:
+        for entry in getattr(eligibility, "excluded", ()):  # SampleEligibility
+            if entry.sample_id not in seen:
+                entries.append(
+                    {
+                        "sample_id": entry.sample_id,
+                        "reason_code": entry.reason_code,
+                        "excluded_by": "caller pre-filter",
+                    }
+                )
+                seen.add(entry.sample_id)
+
+    by_code: Dict[str, int] = {}
+    for entry in entries:
+        code = str(entry.get("reason_code"))
+        by_code[code] = by_code.get(code, 0) + 1
+
+    applied = quarantine is not None or eligibility is not None
+    path = getattr(quarantine, "path", None) if quarantine is not None else None
+    return {
+        "policy_applied": applied,
+        "policy_version": getattr(quarantine, "version", None) if quarantine else None,
+        "policy_path": str(path) if path else None,
+        "n_excluded": len(entries),
+        "excluded_by_reason_code": by_code,
+        "excluded_samples": entries,
+    }
+
+
 def fit_training_statistics(
     samples: Iterable[CanonicalSample],
     *,
     dataset_id: str = "kuro_siwo",
     code_version: Optional[str] = None,
     reprojection: Optional[object] = None,
+    quarantine: Optional[object] = None,
+    eligibility: Optional[object] = None,
 ) -> StatisticsArtifact:
     """Fit per-channel mean and std over the TRAINING split only.
 
@@ -311,6 +357,14 @@ def fit_training_statistics(
     a std fitted pre-resampling is systematically wrong for post-resampling
     data. The setting is therefore recorded in provenance and the training path
     passes its own configuration straight through.
+
+    ``quarantine`` applies the same eligibility policy training uses, skipping
+    and recording any sample it excludes. ``eligibility`` supplies a
+    pre-computed :class:`SampleEligibility` for the case where the caller
+    already filtered the stream — which it must, because a quarantined sample
+    may be unloadable, and the fitter would never get to see it. Without this
+    the artifact would record zero exclusions while the caller had in fact
+    excluded samples, understating its own audit trail.
     """
 
     count = np.zeros(len(CHANNEL_ORDER), dtype=np.float64)
@@ -318,6 +372,7 @@ def fit_training_statistics(
     total_sq = np.zeros(len(CHANNEL_ORDER), dtype=np.float64)
     activations: set[str] = set()
     n_tiles = 0
+    quarantined_seen: list[dict] = []
 
     for sample in samples:
         if sample.split != "train":
@@ -332,6 +387,15 @@ def fit_training_statistics(
                 f"{sample.dataset_id!r}, not {dataset_id!r}; a mixed-corpus fit would "
                 "average two different SAR representations"
             )
+        if quarantine is not None and quarantine.is_quarantined(sample.sample_id):
+            # The SAME eligibility policy as training. A sample excluded from
+            # training must not contribute to the parameters training uses, and
+            # the exclusion is recorded rather than quietly skipped.
+            entry = quarantine.entry(sample.sample_id)
+            quarantined_seen.append(
+                {"sample_id": sample.sample_id, "reason_code": entry.reason_code}
+            )
+            continue
         if reprojection is not None:
             # Identical call shape to the training path, via the shared
             # spatial component, so the fitted parameters describe exactly the
@@ -397,13 +461,21 @@ def fit_training_statistics(
             "sar_clip_max_linear": 0.15,
             "sar_conversion_to_db_applied": False,
             "additional_speckle_filter_applied": False,
-            "resampled": False,
+            # Reflects what actually happened, not a constant: a provenance
+            # record claiming unresampled data for a reprojected fit would
+            # describe the wrong artifact.
+            "resampled": reprojection is not None,
         },
         aggregation_basis="per valid pixel, pooled across tiles (not per-tile mean of means)",
         code_version=code_version,
         extra={
             "validity_basis": "M4 canonical validity mask (Kuro MK0_MNA == 1)",
             "fitted_from_validation_or_test": False,
+            # Eligibility is recorded unconditionally: an absent key would be
+            # indistinguishable from an unapplied policy. A caller that
+            # pre-filtered the stream supplies its own record, because the
+            # fitter cannot count samples it was never handed.
+            "quarantine": _quarantine_record(quarantine, quarantined_seen, eligibility),
             # Recorded because a std fitted before resampling does not describe
             # a resampled training input: bilinear changes field variance.
             "spatial_transform": (

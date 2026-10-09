@@ -1,0 +1,75 @@
+# =============================================================================
+# configs/quarantine/kuro_siwo.yaml
+#
+# EXPLICIT SAMPLE QUARANTINE. Sample IDs and reasons only — no pixel data, so
+# this file is committable and auditable.
+#
+# WHAT THIS IS NOT. It is not an exception handler, not a `try/except` around a
+# loader, and not a way to make an integrity failure quiet. The adapter's
+# refusal stays exactly as loud as it was; this is an eligibility list consulted
+# BEFORE a sample is loaded, so an excluded sample is excluded by name and is
+# reported as such wherever counts appear.
+#
+# WHAT IT DOES NOT TOUCH. Frozen label semantics ({0,1,2} + stored nodata 3)
+# and frozen validity semantics (MK0_MNA == 1) are unchanged. Nothing here
+# promotes NaN to a fourth validity mechanism, replaces a value, imputes a
+# pixel, or reconstructs a sample.
+#
+# Evidence, the full-corpus scan and the recovery assessment that led to this
+# are in docs/m5-source-data-quarantine.md.
+# =============================================================================
+
+version: "1.0.0"
+dataset_id: "kuro_siwo"
+approved_at: "2026-10-09"
+evidence: "docs/m5-source-data-quarantine.md"
+
+# -----------------------------------------------------------------------------
+# Reason codes — a closed set. Adding one is a recorded decision, because a
+# free-text reason is how a quarantine list turns into a dumping ground.
+# -----------------------------------------------------------------------------
+reason_codes:
+  nan_on_declared_valid_consumed_sar: >-
+    One or more CONSUMED SAR channels (SL1 pre-event, MS1 post-event) contain
+    non-finite values at pixels that MK0_MNA, MK0_MLU and the SAR-zero
+    mechanism all independently declare valid. NaN is a fourth state the frozen
+    contract does not model, so it cannot be reinterpreted as invalid without
+    inventing a validity mechanism the corpus does not declare. The pixels
+    cannot be repaired without fabricating backscatter.
+
+# -----------------------------------------------------------------------------
+# Quarantined samples
+#
+# Scope note: sample 1111004:304feeed-... was investigated alongside this one
+# and is deliberately NOT listed. Its four consumed channels are provably
+# finite and non-negative; only the DROPPED SL2 epoch is defective, and the
+# adapter now reports that in `dropped_source_diagnostics` rather than
+# rejecting a usable sample. See docs/m5-source-data-quarantine.md §3.4.
+# -----------------------------------------------------------------------------
+samples:
+  - sample_id: "1111004:df3d7e17-0a15-5d76-aad9-4571285aae39"
+    activation: 1111004
+    official_split: "train"
+    reason_code: "nan_on_declared_valid_consumed_sar"
+    # Measured 2026-10-09 against the local delivery.
+    affected_planes:
+      - "SL1_IVV"   # 118 NaN, all on declared-valid pixels
+      - "SL1_IVH"   # 118
+      - "MS1_IVV"   # 114
+      - "MS1_IVH"   # 114
+      - "SL2_IVV"   # 112 (dropped epoch; would not alone warrant exclusion)
+      - "SL2_IVH"   # 112
+    consumed_channel_nan_on_valid_pixels: 464
+    nan_footprint: "rows 103-112, cols 187-223 (right tile edge)"
+    recovery_attempted: false
+    recovery_blocked_by: >-
+      The official GeoTIFF distribution (orion-ai-lab/Kuro-Siwo-GeoTIFFs) is
+      public and ungated but ships as 35 un-indexed tar shards totalling
+      699 GB, so a specific grid cannot be addressed without streaming
+      shards — roughly 350 GB expected to recover 0.014% of the corpus. The
+      edge-clustered, per-acquisition footprint also suggests an artifact baked
+      into the published product rather than local download corruption, so
+      retrieval may reproduce the same NaNs.
+    reinstate_if: >-
+      A verified copy shows finite values on these pixels, or a per-file
+      endpoint makes targeted retrieval cheap.

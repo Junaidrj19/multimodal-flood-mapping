@@ -61,6 +61,13 @@ reprojection:
   label_resampling: "nearest"
   nodata_mode: "strict"
 
+# Same eligibility policy as the real baseline, so the development run cannot
+# accidentally train on a sample the baseline excludes.
+quarantine:
+  enabled: true
+  path: null
+  require_policy_file: true
+
 dataloader:
   batch_size: 2
   # 0 workers: the test suite must not fork worker processes.

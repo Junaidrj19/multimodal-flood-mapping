@@ -22,6 +22,7 @@ from torch.utils.data import Dataset
 
 from floodmap.datasets import KuroSiwoAdapter
 from floodmap.datasets.contracts import CanonicalSample
+from floodmap.datasets.quarantine import QuarantinePolicy
 
 from .augment import GeometricAugmentation
 from .channels import CHANNEL_ORDER
@@ -61,6 +62,11 @@ class KuroSiwoSarDataset(Dataset):
         component in ``floodmap.preprocessing.reprojection`` — the same code
         M2 production preprocessing uses, which is what makes training and
         inference spatially comparable.
+    quarantine
+        Optional eligibility policy. Quarantined samples are removed from this
+        split BEFORE any load, by name and with a reason, and the exclusion is
+        recorded in :meth:`identity`. Passing ``None`` applies no policy and
+        says so in the audit record; it does not mean "no exclusions exist".
     """
 
     def __init__(
@@ -74,6 +80,7 @@ class KuroSiwoSarDataset(Dataset):
         limit: Optional[int] = None,
         ignore_index: Optional[int] = None,
         reprojection: Optional[object] = None,
+        quarantine: Optional[QuarantinePolicy] = None,
     ) -> None:
         self.adapter = adapter
         self.split = split
@@ -81,6 +88,7 @@ class KuroSiwoSarDataset(Dataset):
         self.augmentation = augmentation
         self.ignore_index = ignore_index
         self.reprojection = reprojection
+        self.quarantine = quarantine
 
         available = {
             ref.sample_id: ref for ref in adapter.discover() if ref.split == split
@@ -91,12 +99,24 @@ class KuroSiwoSarDataset(Dataset):
                 raise KeyError(
                     f"sample ids are not present in the {split!r} split: {unknown[:5]}"
                 )
+            # A caller that names samples gets an error rather than a shorter
+            # list: silently returning fewer than were asked for is exactly the
+            # silent skip the policy exists to prevent.
+            if quarantine is not None:
+                quarantine.require_eligible(list(sample_ids))
             selected = [sid for sid in sorted(available) if sid in set(sample_ids)]
         else:
             # Sorted, not directory order: os.listdir ordering is filesystem
             # dependent, and an unstable index would make a seeded run
             # irreproducible across machines.
             selected = sorted(available)
+
+        policy = quarantine if quarantine is not None else QuarantinePolicy.empty(
+            adapter.dataset_id
+        )
+        eligibility = policy.partition(selected)
+        self.eligibility = eligibility
+        selected = list(eligibility.eligible)
 
         if limit is not None:
             selected = selected[: int(limit)]
@@ -144,6 +164,9 @@ class KuroSiwoSarDataset(Dataset):
                     "nodata_mode": getattr(self.reprojection, "nodata_mode", None),
                 }
             ),
+            # Always present, even when nothing was excluded: an absent key is
+            # indistinguishable from an unapplied policy.
+            "quarantine": self.eligibility.audit_record(),
         }
 
     # -- Dataset protocol --------------------------------------------------

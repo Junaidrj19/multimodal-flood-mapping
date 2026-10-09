@@ -32,6 +32,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from floodmap.datasets import KuroSiwoAdapter
+from floodmap.datasets.quarantine import load_quarantine
+from floodmap.utils.config import project_root
 
 from .augment import GeometricAugmentation
 from .channels import CHANNEL_ORDER, FLOOD_CLASS_ID, NUM_CLASSES
@@ -100,13 +102,35 @@ def resolve_statistics(config: ExperimentConfig) -> Optional[StatisticsArtifact]
     if not section.enabled:
         return None
     if section.statistics_path:
-        artifact = StatisticsArtifact.read(Path(section.statistics_path))
+        # Resolved against the project root, not the process CWD, so a run
+        # behaves the same from a script, a test and a notebook.
+        candidate = Path(section.statistics_path)
+        if not candidate.is_absolute():
+            candidate = project_root() / candidate
+        artifact = StatisticsArtifact.read(candidate)
         if section.required_kind == "fitted":
             artifact.require_fitted()
         return artifact
     return development_statistics(
         dataset_id=config.dataset.id,
         reason=f"experiment {config.name!r} is a pipeline-verification run",
+    )
+
+
+def resolve_quarantine(config: ExperimentConfig):
+    """Load the eligibility policy the config asks for.
+
+    Returns ``None`` when disabled, which the run record states explicitly so
+    "no policy applied" is never confused with "no exclusions exist".
+    """
+
+    section = config.quarantine
+    if not section.enabled:
+        return None
+    return load_quarantine(
+        config.dataset.id,
+        path=Path(section.path) if section.path else None,
+        required=section.require_policy_file,
     )
 
 
@@ -253,6 +277,7 @@ def run_training(
     # One settings object, shared by both splits, so train and validation are
     # warped by identical spatial parameters.
     reprojection = config.reprojection if config.reprojection.enabled else None
+    quarantine = resolve_quarantine(config)
 
     train_dataset = KuroSiwoSarDataset(
         adapter,
@@ -262,6 +287,7 @@ def run_training(
         limit=config.dataset.limit_train,
         ignore_index=config.dataset.ignore_index,
         reprojection=reprojection,
+        quarantine=quarantine,
     )
     # Augmentation is deliberately NOT passed to validation: a flipped
     # validation tile scores a different, unrepeatable number each epoch.
@@ -273,6 +299,7 @@ def run_training(
         limit=config.dataset.limit_validation,
         ignore_index=config.dataset.ignore_index,
         reprojection=reprojection,
+        quarantine=quarantine,
     )
     if len(train_dataset) == 0:
         raise RuntimeError(
@@ -428,6 +455,11 @@ def run_training(
                 "settings": None if reprojection is None else reprojection.model_dump(mode="json"),
             },
             "statistics_identity": statistics_identity,
+            "quarantine_policy": (
+                {"applied": False, "reason": "disabled in experiment configuration"}
+                if quarantine is None
+                else quarantine.to_dict()
+            ),
             "train_dataset": train_dataset.identity(),
             "validation_dataset": val_dataset.identity(),
             "model": {

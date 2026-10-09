@@ -555,27 +555,27 @@ weakened by the filter.
    activations), while production inference serves genuinely 10 m Sentinel-1.
    `floodmap.preprocessing.reprojection` now warps to a per-sample 10 m UTM
    grid and is called by both paths. The real baseline config enables it; see
-   §15. The previously recorded train/serve spatial mismatch is **resolved in
+   §14. The previously recorded train/serve spatial mismatch is **resolved in
    code**, but no run has yet been performed with it.
 
 6. **Determinism is partial** — cuDNN flags only, not
    `use_deterministic_algorithms`. See §8.2.
 
-7. **Two source samples are malformed and currently block a full training
-   pass.** 2 of 7,103 samples contain NaN in SAR pixels that all three Kuro
-   validity mechanisms declare valid. The adapter refuses them loudly, which is
-   correct. Evidence, recovery assessment and a proposed quarantine policy are
-   in `docs/m5-source-data-quarantine.md`. **The policy is not activated** and
-   no sample is excluded. Neither affected sample is in the validation or test
-   split.
+7. **Two source samples were malformed; both are now resolved** (2026-10-09).
+   Of 7,103 samples, 2 contained NaN in SAR pixels that all three Kuro validity
+   mechanisms declare valid. One is reinstated (its four consumed channels are
+   clean; only the dropped SL2 epoch is defective, now reported in
+   `dropped_source_diagnostics`); one is quarantined by an explicit versioned
+   policy. **Neither validation nor test is affected.** See
+   `docs/m5-source-data-quarantine.md` and §15.
 
 ---
 
-## 15. Shared spatial reprojection
+## 14. Shared spatial reprojection
 
 Added 2026-10-09. `src/floodmap/preprocessing/reprojection.py`.
 
-### 15.1 Why one implementation
+### 14.1 Why one implementation
 
 Training and inference resampling differently is a defect that hides itself:
 both paths look individually reasonable, and every metric measured in training
@@ -592,7 +592,7 @@ and a direct M2-style call produce **bit-identical** values on shared valid
 pixels; another is a structural guard that neither `preprocessing/pipeline.py`
 nor `segmentation/spatial.py` contains its own `rasterio.warp` call.
 
-### 15.2 Source to target
+### 14.2 Source to target
 
 | | Source (delivered) | Target (canonical) |
 |---|---|---|
@@ -627,7 +627,7 @@ never filled. A smaller value such as 208 would waste less area on activation
 observations whereas padding only adds pixels that `ignore_index` excludes
 anyway.
 
-### 15.3 Nodata policy
+### 14.3 Nodata policy
 
 **The problem.** Kuro stores invalid SAR as `0.0`. Once that enters a bilinear
 kernel it is indistinguishable from genuine near-zero backscatter — which is
@@ -659,7 +659,7 @@ so a sentinel can never be read back as zero backscatter. Tests assert that no
 surviving valid pixel holds a value between the sentinel and the true source
 value.
 
-### 15.4 Alignment
+### 14.4 Alignment
 
 All four SAR channels, the label raster and the validity mask are warped onto
 the **same** concrete grid. The final mask is the **intersection** of the SAR
@@ -668,7 +668,7 @@ footprints differ at the fringe, and intersecting is what keeps image, target
 and mask describing the same pixels. Tests assert one shared validity footprint
 across all four channels and the target.
 
-### 15.5 M2 ordering defect found and fixed
+### 14.5 M2 ordering defect found and fixed
 
 `preprocess_sentinel1_pair` converted linear backscatter to decibels **before**
 calling `_reproject_to_grid`, so bilinear/average resampling averaged
@@ -691,7 +691,7 @@ the biased-low direction — toward the water-like values the model keys on. The
 regression test asserts the correct value and explicitly asserts the result is
 *not* the defective one.
 
-### 15.6 Statistics implication
+### 14.6 Statistics implication
 
 `fit_training_statistics` now accepts and records the reprojection settings.
 This is not bookkeeping: bilinear resampling changes the variance of the field
@@ -704,15 +704,110 @@ the two paths, so the recorded setting cannot be vacuous.
 
 ---
 
+## 15. Fitted training statistics — 2026-10-09
+
+**The production artifact now exists.** `configs/experiments/m5_kuro_sar_unet.yaml`
+references it and the config is runnable.
+
+### 15.1 How it was produced
+
+```bash
+FLOODMAP_KURO_SIWO_ROOT=… python3 scripts/fit_statistics.py \
+    --config m5_kuro_sar_unet \
+    --output artifacts/statistics/kuro_sar_fitted
+```
+
+The spatial and channel pipeline comes from the **experiment config**, not from
+flags. That is deliberate: bilinear resampling changes the variance of the
+field it is applied to, so a std fitted on the delivered source grid does not
+describe a reprojected training input, and the mismatch would be invisible.
+The artifact records its own spatial settings, and a test asserts they match
+the config's.
+
+| | |
+|---|---|
+| Discovered (official `train`) | 7,052 |
+| Quarantined | 1 (`nan_on_declared_valid_consumed_sar`) |
+| **Fitted over** | **7,051** |
+| Valid pixels | **279,310,909** |
+| Activations | 1111004, 1111005, 1111006 (all official `train`) |
+| Spatial | reprojected, 10.0 m UTM, tile 224, bilinear/nearest, nodata `strict` |
+| Representation | linear sigma0, clipped 0.15, **no dB conversion** |
+| Aggregation | per valid pixel, pooled across tiles |
+| Kind | `fitted` |
+| Runtime | 2.8 min (~43 tiles/s) |
+
+### 15.2 Values
+
+| Channel | mean | std |
+|---|---|---|
+| `pre_vv` | 0.09870434 | 0.04048222 |
+| `pre_vh` | 0.02862864 | 0.01623316 |
+| `post_vv` | 0.10876928 | 0.04195391 |
+| `post_vh` | 0.03405827 | 0.02028676 |
+
+### 15.3 Cross-check against the published reference
+
+C5 permits a **tolerance-banded cross-check** over the full training split and
+explicitly forbids a per-raster equality gate. Against Kuro's published
+`data_mean`/`data_std` (VV 0.0953 / 0.0427, VH 0.0264 / 0.0215):
+
+| Channel | mean Δ | std Δ |
+|---|---|---|
+| `pre_vv` | **+3.6%** | −5.2% |
+| `pre_vh` | +8.4% | −24.5% |
+| `post_vv` | +14.1% | −1.7% |
+| `post_vh` | +29.0% | −5.6% |
+
+`pre_vv` at +3.6% is the closest agreement observed so far — the earlier
+150-tile post-event-only subset recorded in `configs/data.yaml` was +24%. The
+pre-event channels agree more closely than the post-event ones.
+
+**This is a consistency signal, not a validation.** The reference's pre/post
+basis, split basis and aggregation basis are all unstated upstream, so the
+bands cannot be interpreted as error. A test asserts the reference values were
+not adopted as our parameters. The `pre_vh` std at −24.5% is the largest
+deviation and is the one worth revisiting if transfer behaviour looks wrong.
+
+### 15.4 Why the artifact is not committed
+
+`artifacts/` is git-ignored: the artifact is derived from a corpus this
+repository must not redistribute (C11). On a fresh checkout the path will not
+resolve and the run **refuses to start** with the remedy — better than silently
+normalising with something else. A test asserts that a missing artifact raises
+rather than falling back, and the artifact-dependent tests are skip-gated on
+its presence.
+
+### 15.5 What the frozen contract still says, and why
+
+`configs/segmentation.yaml -> features.normalisation` still declares
+`fitted_statistics_exist: false` and `statistics_path: null`, and
+`configs/data.yaml -> m4_contract.statistics.fitted` still declares
+`exists: false`. **These were deliberately not changed.**
+
+The reasoning: those files are the committed, frozen record. The artifact is a
+local build product that is *not* in the repository, so from the repository's
+own point of view no fitted artifact exists. Declaring one in a committed
+config while the file is absent from the checkout would create exactly the
+"declared artifact that does not exist" failure C5 was written to prevent.
+
+The experiment config — the file that records what one *run* did — is the right
+place for the path, and that is where it is. **Flagged for review:** if the
+project later decides the frozen block should track the existence of local
+fitted artifacts, that is a contract amendment and should be made deliberately,
+not as a side effect of a fitting run.
+
+---
+
 ## 16. Next step
 
-Statistics and training remain blocked, in this order:
+Pipeline state is no longer blocking. Remaining before a **reportable** result:
 
-1. resolve the source-data quarantine decision
-   (`docs/m5-source-data-quarantine.md` §3.4);
-2. fit training statistics with the reprojection settings the run will use;
-3. then run the baseline.
+1. validation is one activation / 19 tiles, below the minimum of 2 recorded in
+   `configs/evaluation.yaml` — any flood IoU produced now is pipeline evidence,
+   not a measurement;
+2. the speckle train/serve mismatch must be quantified by ablation before any
+   transfer claim.
 
-Reporting any flood-IoU number as a result additionally requires resolving
-limitation 1 (validation is one activation, 19 tiles).
-
+The baseline run itself can now be launched with
+`scripts/train_segmentation.py --config m5_kuro_sar_unet`.

@@ -30,7 +30,13 @@ from floodmap.utils.config import project_root
 
 from .channels import CHANNEL_ORDER, IGNORE_INDEX, NUM_CLASSES, REQUIRED_SAR_REPRESENTATION
 
-__all__ = ["ExperimentConfig", "ReprojectionSection", "load_experiment", "experiments_dir"]
+__all__ = [
+    "ExperimentConfig",
+    "QuarantineSection",
+    "ReprojectionSection",
+    "load_experiment",
+    "experiments_dir",
+]
 
 
 class _Strict(BaseModel):
@@ -123,6 +129,23 @@ class ReprojectionSection(_Strict):
         from floodmap.preprocessing.reprojection import NodataPolicy
 
         return NodataPolicy(mode=self.nodata_mode)
+
+
+class QuarantineSection(_Strict):
+    """Sample-level eligibility policy.
+
+    ``enabled: true`` with no ``path`` resolves the conventional location
+    ``configs/quarantine/<dataset id>.yaml``. The policy excludes whole samples
+    by name; it does not touch frozen label or validity semantics.
+
+    Disabled means NO policy is applied, which is recorded as such in the run
+    record. It does not mean no exclusions exist.
+    """
+
+    enabled: bool = True
+    path: Optional[str] = None
+    #: Fail if the policy file is absent, rather than silently applying none.
+    require_policy_file: bool = False
 
 
 class DataLoaderSection(_Strict):
@@ -321,6 +344,7 @@ class ExperimentConfig(_Strict):
     primary_metric: str = "iou_flood_class"
     dataset: DatasetSection
     reprojection: ReprojectionSection = Field(default_factory=ReprojectionSection)
+    quarantine: QuarantineSection = Field(default_factory=QuarantineSection)
     dataloader: DataLoaderSection
     model: ModelSection
     loss: LossSection

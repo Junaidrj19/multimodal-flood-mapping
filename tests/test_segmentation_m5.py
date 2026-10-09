@@ -803,11 +803,19 @@ class TestExperimentConfig:
         assert config.primary_metric == "iou_flood_class"
         assert config.loss.class_weights is None
 
-    def test_the_baseline_config_is_blocked_on_fitted_statistics(self):
-        """Loadable and auditable, but not runnable. C5 forbids both a fabricated
-        value and a path to an artifact that does not exist."""
-        config = load_experiment("m5_kuro_sar_unet")
-        assert config.normalisation.statistics_path is None
+    def test_a_config_without_a_fitted_artifact_is_loadable_but_blocked(self):
+        """The blocking MECHANISM, tested independently of current state.
+
+        C5 forbids both a fabricated value and a path to an artifact that does
+        not exist, so "enabled + fitted + no path" must stay legal to LOAD and
+        illegal to RUN. The production config has since been pointed at a real
+        artifact (see TestProductionStatisticsWiring); this pins the behaviour
+        that protected it beforehand and would protect any future config.
+        """
+        payload = load_experiment("m5_kuro_sar_unet").model_dump()
+        payload["normalisation"]["statistics_path"] = None
+        config = ExperimentConfig.model_validate(payload)  # loads fine
+
         assert config.normalisation.required_kind == "fitted"
         assert config.normalisation.is_runnable is False
         assert "NO FITTED STATISTICS EXIST" in config.normalisation.blocked_reason()
@@ -1207,7 +1215,13 @@ class TestCheckpoints:
         assert '"test"' not in source and "'test'" not in source
 
     def test_a_blocked_config_refuses_to_run(self, adapter, tmp_path):
-        config = load_experiment("m5_kuro_sar_unet")
+        """A config requiring fitted statistics it does not have must not start."""
+        payload = load_experiment("m5_kuro_sar_unet_dev").model_dump()
+        payload["normalisation"]["required_kind"] = "fitted"
+        payload["normalisation"]["allow_development_statistics"] = False
+        payload["normalisation"]["statistics_path"] = None
+        config = ExperimentConfig.model_validate(payload)
+
         with pytest.raises(RuntimeError, match="NO FITTED STATISTICS EXIST"):
             run_training(config, adapter=adapter, run_dir=tmp_path / "blocked")
         assert not (tmp_path / "blocked").exists() or not list(
@@ -1578,3 +1592,282 @@ class TestReprojectionConfiguration:
         assert spatial["settings"]["nodata_mode"] == "strict"
         assert record["train_dataset"]["reprojected_to_canonical_grid"] is True
         assert record["validation_dataset"]["reprojected_to_canonical_grid"] is True
+
+
+# ---------------------------------------------------------------------------
+# Quarantine applied at the two eligibility points
+# ---------------------------------------------------------------------------
+
+
+class TestQuarantineEligibility:
+    """The same policy must govern training and statistics fitting.
+
+    If a sample were excluded from training but still fed to the fitter, the
+    normalisation parameters would describe a corpus the model never sees --
+    and nothing downstream could detect it.
+    """
+
+    def _policy(self, tmp_path, sample_id):
+        import yaml
+
+        from floodmap.datasets.quarantine import load_quarantine
+
+        path = tmp_path / "q.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "version": "test-1",
+                    "dataset_id": "kuro_siwo",
+                    "reason_codes": {"synthetic": "excluded by a test"},
+                    "samples": [{"sample_id": sample_id, "reason_code": "synthetic"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return load_quarantine("kuro_siwo", path=path, required=True)
+
+    def test_a_quarantined_sample_is_removed_from_the_split(self, adapter, tmp_path):
+        full = KuroSiwoSarDataset(adapter, "train")
+        victim = full.sample_ids[1]
+        policy = self._policy(tmp_path, victim)
+
+        filtered = KuroSiwoSarDataset(adapter, "train", quarantine=policy)
+        assert len(filtered) == len(full) - 1
+        assert victim not in filtered.sample_ids
+        assert set(filtered.sample_ids) == set(full.sample_ids) - {victim}
+
+    def test_the_exclusion_is_recorded_in_dataset_identity(self, adapter, tmp_path):
+        full = KuroSiwoSarDataset(adapter, "train")
+        victim = full.sample_ids[0]
+        identity = KuroSiwoSarDataset(
+            adapter, "train", quarantine=self._policy(tmp_path, victim)
+        ).identity()
+
+        audit = identity["quarantine"]
+        assert audit["policy_applied"] is True
+        assert audit["policy_version"] == "test-1"
+        assert audit["n_excluded"] == 1
+        assert audit["excluded_by_reason_code"] == {"synthetic": 1}
+        assert audit["excluded_samples"][0]["sample_id"] == victim
+        assert audit["excluded_samples"][0]["reason_code"] == "synthetic"
+
+    def test_no_policy_is_reported_as_no_policy_not_as_no_exclusions(self, adapter):
+        audit = KuroSiwoSarDataset(adapter, "train").identity()["quarantine"]
+        assert audit["policy_applied"] is False
+        assert audit["policy_version"] is None
+        assert audit["n_excluded"] == 0
+
+    def test_explicitly_requesting_a_quarantined_sample_raises(self, adapter, tmp_path):
+        """Never return a shorter list than was asked for."""
+        from floodmap.datasets.quarantine import QuarantineError
+
+        full = KuroSiwoSarDataset(adapter, "train")
+        victim = full.sample_ids[2]
+        policy = self._policy(tmp_path, victim)
+
+        with pytest.raises(QuarantineError, match="explicitly requested"):
+            KuroSiwoSarDataset(
+                adapter, "train", sample_ids=[full.sample_ids[0], victim], quarantine=policy
+            )
+
+    def test_statistics_fitting_honours_the_same_policy(self, adapter, tmp_path):
+        dataset = KuroSiwoSarDataset(adapter, "train")
+        samples = [dataset.load_canonical(i) for i in range(len(dataset))]
+        victim = dataset.sample_ids[1]
+        policy = self._policy(tmp_path, victim)
+
+        unfiltered = fit_training_statistics(samples)
+        filtered = fit_training_statistics(samples, quarantine=policy)
+
+        assert unfiltered.provenance["n_tiles"] == len(samples)
+        assert filtered.provenance["n_tiles"] == len(samples) - 1
+        # Excluding a tile must actually change the parameters, or the test
+        # would pass without the exclusion having any effect.
+        assert not np.allclose(unfiltered.mean_vector(), filtered.mean_vector())
+
+    def test_statistics_provenance_records_the_exclusion(self, adapter, tmp_path):
+        dataset = KuroSiwoSarDataset(adapter, "train")
+        samples = [dataset.load_canonical(i) for i in range(len(dataset))]
+        victim = dataset.sample_ids[0]
+
+        artifact = fit_training_statistics(
+            samples, quarantine=self._policy(tmp_path, victim)
+        )
+        audit = artifact.provenance["quarantine"]
+        assert audit["policy_applied"] is True
+        assert audit["policy_version"] == "test-1"
+        assert audit["n_excluded"] == 1
+        assert audit["excluded_samples"][0]["sample_id"] == victim
+
+    def test_statistics_provenance_records_when_no_policy_applied(self, adapter):
+        dataset = KuroSiwoSarDataset(adapter, "train")
+        samples = [dataset.load_canonical(i) for i in range(len(dataset))]
+        audit = fit_training_statistics(samples).provenance["quarantine"]
+        assert audit["policy_applied"] is False
+        assert audit["n_excluded"] == 0
+
+    def test_both_configs_enable_the_policy_and_require_the_file(self):
+        for name in ("m5_kuro_sar_unet", "m5_kuro_sar_unet_dev"):
+            config = load_experiment(name)
+            assert config.quarantine.enabled is True, name
+            assert config.quarantine.require_policy_file is True, name
+            assert config.quarantine.path is None, name
+
+    def test_the_run_record_names_the_policy(self, adapter, tmp_path):
+        config = load_experiment("m5_kuro_sar_unet_dev")
+        result = run_training(config, adapter=adapter, run_dir=tmp_path / "run")
+        record = json.loads(result.run_record_path.read_text(encoding="utf-8"))
+
+        policy = record["quarantine_policy"]
+        assert policy["dataset_id"] == "kuro_siwo"
+        assert policy["version"]
+        assert policy["evidence"] == "docs/m5-source-data-quarantine.md"
+        assert policy["n_entries"] == 1
+        # And both splits carry their own audit record.
+        for split in ("train_dataset", "validation_dataset"):
+            assert record[split]["quarantine"]["policy_applied"] is True
+
+    def test_a_disabled_policy_is_recorded_as_disabled(self, adapter, tmp_path):
+        payload = load_experiment("m5_kuro_sar_unet_dev").model_dump()
+        payload["quarantine"]["enabled"] = False
+        payload["quarantine"]["require_policy_file"] = False
+        config = ExperimentConfig.model_validate(payload)
+
+        result = run_training(config, adapter=adapter, run_dir=tmp_path / "run")
+        record = json.loads(result.run_record_path.read_text(encoding="utf-8"))
+        assert record["quarantine_policy"]["applied"] is False
+        assert "disabled" in record["quarantine_policy"]["reason"]
+
+    def test_a_missing_required_policy_file_fails_the_run(self, adapter, tmp_path):
+        from floodmap.datasets.quarantine import QuarantineError
+
+        payload = load_experiment("m5_kuro_sar_unet_dev").model_dump()
+        payload["quarantine"]["path"] = str(tmp_path / "absent.yaml")
+        config = ExperimentConfig.model_validate(payload)
+
+        with pytest.raises(QuarantineError, match="not found"):
+            run_training(config, adapter=adapter, run_dir=tmp_path / "run")
+
+
+# ---------------------------------------------------------------------------
+# The production fitted-statistics artifact
+# ---------------------------------------------------------------------------
+
+#: The artifact is git-ignored (derived from a corpus that must not be
+#: redistributed, C11), so these tests are gated on its presence rather than
+#: failing on a fresh checkout.
+_FITTED_DIR = (
+    Path(__file__).resolve().parents[1] / "artifacts" / "statistics" / "kuro_sar_fitted"
+)
+_HAS_FITTED = (_FITTED_DIR / "statistics.json").is_file()
+
+
+class TestProductionStatisticsWiring:
+    """The production config must reference the artifact it was fitted with."""
+
+    def test_the_config_declares_a_fitted_artifact_path(self):
+        normalisation = load_experiment("m5_kuro_sar_unet").normalisation
+        assert normalisation.enabled is True
+        assert normalisation.required_kind == "fitted"
+        assert normalisation.allow_development_statistics is False
+        assert normalisation.statistics_path, "the fitted artifact path must be declared"
+
+    def test_the_config_is_now_runnable(self):
+        normalisation = load_experiment("m5_kuro_sar_unet").normalisation
+        assert normalisation.is_runnable is True
+        assert normalisation.blocked_reason() is None
+
+    def test_development_statistics_are_still_refused_for_this_config(self):
+        """A fitted run must not fall back to placeholder parameters."""
+        payload = load_experiment("m5_kuro_sar_unet").model_dump()
+        payload["normalisation"]["allow_development_statistics"] = True
+        with pytest.raises(ValueError, match="contradicts required_kind"):
+            ExperimentConfig.model_validate(payload)
+
+    @pytest.mark.parametrize("kind", ["development", "reference", "validation"])
+    def test_every_non_fitted_kind_is_refused(self, kind):
+        artifact = StatisticsArtifact(
+            kind=kind,
+            values=development_statistics().values,
+            provenance={**development_statistics().provenance, "kind": kind},
+        )
+        with pytest.raises(StatisticsError):
+            artifact.require_fitted()
+
+    def test_a_missing_artifact_fails_loudly_rather_than_silently(self, tmp_path):
+        payload = load_experiment("m5_kuro_sar_unet").model_dump()
+        payload["normalisation"]["statistics_path"] = str(tmp_path / "absent")
+        config = ExperimentConfig.model_validate(payload)
+        from floodmap.segmentation.train import resolve_statistics
+
+        with pytest.raises(StatisticsError, match="incomplete statistics artifact"):
+            resolve_statistics(config)
+
+    @pytest.mark.skipif(not _HAS_FITTED, reason="fitted artifact not present (git-ignored)")
+    def test_the_declared_path_resolves_to_a_fitted_artifact(self):
+        from floodmap.segmentation.train import resolve_statistics
+
+        artifact = resolve_statistics(load_experiment("m5_kuro_sar_unet"))
+        assert artifact.kind == "fitted"
+        assert artifact.usable_for_reported_results is True
+        assert artifact.require_fitted() is artifact
+
+    @pytest.mark.skipif(not _HAS_FITTED, reason="fitted artifact not present (git-ignored)")
+    def test_the_artifact_was_fitted_on_the_training_split_only(self):
+        artifact = StatisticsArtifact.read(_FITTED_DIR)
+        assert artifact.provenance["split"] == "train"
+        assert artifact.provenance["fitted_from_validation_or_test"] is False
+        # Only official TRAIN activations may appear.
+        from floodmap.datasets.kuro_siwo import OFFICIAL_SPLITS
+
+        official_train = {str(a) for a in OFFICIAL_SPLITS["train"]}
+        assert set(artifact.provenance["activations"]).issubset(official_train)
+
+    @pytest.mark.skipif(not _HAS_FITTED, reason="fitted artifact not present (git-ignored)")
+    def test_the_artifact_matches_the_configs_spatial_pipeline(self):
+        """A std fitted under different spatial settings is the wrong std."""
+        config = load_experiment("m5_kuro_sar_unet")
+        spatial = StatisticsArtifact.read(_FITTED_DIR).provenance["spatial_transform"]
+
+        assert spatial["reprojected_to_canonical_grid"] is config.reprojection.enabled
+        assert spatial["resolution_m"] == config.reprojection.resolution_m
+        assert spatial["tile_size"] == config.reprojection.tile_size
+        assert spatial["sar_resampling"] == config.reprojection.sar_resampling
+        assert spatial["label_resampling"] == config.reprojection.label_resampling
+        assert spatial["nodata_mode"] == config.reprojection.nodata_mode
+
+    @pytest.mark.skipif(not _HAS_FITTED, reason="fitted artifact not present (git-ignored)")
+    def test_the_artifact_records_the_quarantine_exclusion(self):
+        audit = StatisticsArtifact.read(_FITTED_DIR).provenance["quarantine"]
+        assert audit["policy_applied"] is True
+        assert audit["n_excluded"] == 1
+        assert audit["excluded_by_reason_code"] == {
+            "nan_on_declared_valid_consumed_sar": 1
+        }
+
+    @pytest.mark.skipif(not _HAS_FITTED, reason="fitted artifact not present (git-ignored)")
+    def test_the_artifact_declares_that_it_was_resampled(self):
+        state = StatisticsArtifact.read(_FITTED_DIR).provenance["preprocessing_state"]
+        assert state["resampled"] is True
+        assert state["sar_clip_applied"] is True
+        assert state["sar_conversion_to_db_applied"] is False
+
+    @pytest.mark.skipif(not _HAS_FITTED, reason="fitted artifact not present (git-ignored)")
+    def test_the_values_are_plausible_linear_sigma0_not_decibels(self):
+        """An independent check that the representation did not drift."""
+        artifact = StatisticsArtifact.read(_FITTED_DIR)
+        means, stds = artifact.mean_vector(), artifact.std_vector()
+        assert ((means > 0.0) & (means <= 0.15)).all(), means
+        assert (stds > 0.0).all() and (stds <= 0.15).all(), stds
+        # Decibel backscatter would be strongly negative.
+        assert not (means < 0).any()
+
+    @pytest.mark.skipif(not _HAS_FITTED, reason="fitted artifact not present (git-ignored)")
+    def test_reference_values_were_not_adopted_as_our_parameters(self):
+        """C5: the published reference is a cross-check, never our parameters."""
+        artifact = StatisticsArtifact.read(_FITTED_DIR)
+        values = {name: stat.mean for name, stat in artifact.values.items()}
+        # Kuro's published data_mean. Equality would mean they were copied.
+        assert values["pre_vv"] != pytest.approx(0.0953, abs=1e-6)
+        assert values["pre_vh"] != pytest.approx(0.0264, abs=1e-6)
+        assert artifact.provenance["aggregation_basis"].startswith("per valid pixel")

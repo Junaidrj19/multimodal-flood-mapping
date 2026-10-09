@@ -328,3 +328,106 @@ def test_optional_external_kuro_smoke():
 def test_optional_external_sen1_smoke():
     adapter = Sen1Floods11Adapter()
     assert adapter.discover()
+
+
+# ---------------------------------------------------------------------------
+# Finiteness scope: consumed baseline epochs vs the dropped SL2 epoch
+# ---------------------------------------------------------------------------
+
+
+def _corrupt_plane(root: Path, activation: int, role: str, pol: str, value: float):
+    """Write one non-finite / negative pixel into a source SAR plane.
+
+    Targets a pixel the fixture marks VALID (MK0_MNA == 1), which is the exact
+    condition observed in the real delivery: a value that no declared validity
+    mechanism accounts for.
+    """
+    path = sorted((root / str(activation) / "01").glob(f"*/{role}_{pol}_*.tif"))[0]
+    with rasterio.open(path, "r+") as dataset:
+        values = dataset.read(1)
+        values[2, 2] = value  # (2, 2) is labelled class 2 and MNA-valid
+        dataset.write(values, 1)
+    return path
+
+
+class TestConsumedVersusDroppedEpochIntegrity:
+    """Every CONSUMED channel is validated; a dropped epoch is reported.
+
+    The M5 baseline consumes SL1 (pre) and MS1 (post) only; ``SL2`` is recorded
+    as a dropped source and its pixels never reach a tensor. Refusing a whole
+    sample because an epoch it discards is defective is an over-broad check: it
+    costs a sample whose four consumed channels are provably clean.
+
+    The narrowing is deliberately asymmetric -- a defect in a consumed channel
+    is still fatal, and the dropped-epoch defect is still reported rather than
+    dropped, so nothing becomes invisible.
+    """
+
+    SAMPLE = "1111003:11111111-1111-1111-1111-111111111111"
+
+    @pytest.mark.parametrize("role", ["SL1", "MS1"])
+    @pytest.mark.parametrize("value", [float("nan"), -1.0])
+    def test_a_defect_in_a_consumed_epoch_is_still_fatal(self, kuro_root, role, value):
+        _corrupt_plane(kuro_root, 1111003, role, "IVV", value)
+        with pytest.raises(DatasetIntegrityError, match="finite|non-negative"):
+            KuroSiwoAdapter(kuro_root).load_sample(self.SAMPLE)
+
+    @pytest.mark.parametrize("pol", ["IVV", "IVH"])
+    def test_every_consumed_polarisation_is_checked(self, kuro_root, pol):
+        _corrupt_plane(kuro_root, 1111003, "MS1", pol, float("nan"))
+        with pytest.raises(DatasetIntegrityError, match="finite|non-negative"):
+            KuroSiwoAdapter(kuro_root).load_sample(self.SAMPLE)
+
+    def test_a_nan_in_the_dropped_epoch_does_not_reject_the_sample(self, kuro_root):
+        _corrupt_plane(kuro_root, 1111003, "SL2", "IVV", float("nan"))
+        sample = KuroSiwoAdapter(kuro_root).load_sample(self.SAMPLE)
+
+        # The four consumed channels load and are clean.
+        assert set(sample.sar) == {"pre", "post"}
+        for epoch in ("pre", "post"):
+            for pol in ("vv", "vh"):
+                plane = sample.sar[epoch][pol]
+                assert np.isfinite(plane).all()
+                assert (plane >= 0).all()
+
+    def test_the_dropped_epoch_defect_is_recorded_not_hidden(self, kuro_root):
+        path = _corrupt_plane(kuro_root, 1111003, "SL2", "IVV", float("nan"))
+        sample = KuroSiwoAdapter(kuro_root).load_sample(self.SAMPLE)
+
+        diagnostics = sample.dropped_source_diagnostics
+        assert diagnostics, "a dropped-epoch defect must be reported"
+        assert "SL2" in diagnostics
+        entry = diagnostics["SL2"]["vv"]
+        assert entry["non_finite_pixels"] == 1
+        assert entry["non_finite_on_declared_valid_pixels"] == 1
+        assert entry["path"] == str(path)
+        # And it reaches provenance, so an artifact carries the disclosure.
+        assert sample.provenance.dropped_source_diagnostics == diagnostics
+
+    def test_a_clean_sample_reports_no_dropped_epoch_defects(self, kuro_root):
+        sample = KuroSiwoAdapter(kuro_root).load_sample(self.SAMPLE)
+        assert sample.dropped_source_diagnostics == {}
+
+    def test_a_negative_value_in_the_dropped_epoch_is_recorded_not_fatal(self, kuro_root):
+        _corrupt_plane(kuro_root, 1111003, "SL2", "IVH", -0.5)
+        sample = KuroSiwoAdapter(kuro_root).load_sample(self.SAMPLE)
+        entry = sample.dropped_source_diagnostics["SL2"]["vh"]
+        assert entry["negative_pixels"] == 1
+
+    def test_the_dropped_epoch_still_appears_in_temporal_metadata(self, kuro_root):
+        """Narrowing the finiteness check must not remove SL2 from the record."""
+        _corrupt_plane(kuro_root, 1111003, "SL2", "IVV", float("nan"))
+        sample = KuroSiwoAdapter(kuro_root).load_sample(self.SAMPLE)
+        assert sample.temporal_roles["SL2"].rank == 2
+        assert "SL2" in sample.dropped_sources
+        assert sample.provenance.temporal_roles == ("SL1", "MS1", "SL2")
+
+    def test_label_and_validity_cross_checks_are_unchanged(self, kuro_root):
+        """The other two integrity invariants must still bite."""
+        ref = KuroSiwoAdapter(kuro_root).discover()[0]
+        with rasterio.open(ref.validity_asset.path, "r+") as dataset:
+            values = dataset.read(1)
+            values[1, 2] = 0
+            dataset.write(values, 1)
+        with pytest.raises(DatasetIntegrityError, match="MLU|SAR"):
+            KuroSiwoAdapter(kuro_root).load_sample(ref.sample_id)

@@ -3,17 +3,15 @@
 #
 # M5 BASELINE 1 — Kuro Siwo, SAR-only, pre/post, 4-channel, 3-class.
 #
-# STATUS: BLOCKED ON FITTED STATISTICS. This config is deliberately loadable
-# and deliberately not runnable. `normalisation.statistics_path` is null
-# because NO FITTED STATISTICS EXIST, and C5 states plainly that a declared
-# artifact which does not exist is worse than none — so the path is not
-# pre-filled with where the artifact will eventually live.
-# `train.resolve_statistics` raises with the remedy. Fit statistics from the
-# training split first:
+# STATUS: READY TO RUN (statistics fitted 2026-10-09; not yet trained).
 #
-#     python3 scripts/fit_statistics.py --output artifacts/statistics/kuro_sar_fitted
-#
-# then set `statistics_path` to that directory.
+# Fitted training statistics now exist and `normalisation.statistics_path`
+# points at them — see that block below for how they were produced and why the
+# artifact itself is not committed. The remaining blocker on REPORTING a result
+# is evaluation data, not pipeline state: only one validation activation
+# (19 tiles) is available locally, below the minimum of 2 recorded in
+# configs/evaluation.yaml, so any flood-IoU number this config produces is
+# pipeline evidence rather than a measurement.
 #
 # WHY THIS FILE EXISTS SEPARATELY FROM configs/segmentation.yaml.
 # That file is part of the frozen contract and keeps `model.architecture: null`
@@ -33,7 +31,7 @@
 
 name: "m5_kuro_sar_unet"
 version: "1.0.0"
-status: "blocked_on_fitted_statistics"
+status: "ready_to_run"
 description: >-
   First supervised flood segmentation baseline. Kuro Siwo labelled partition
   01, SAR only, SL1 pre-event and MS1 post-event, VV and VH, linear sigma0
@@ -118,6 +116,27 @@ reprojection:
   nodata_mode: "strict"
 
 # -----------------------------------------------------------------------------
+# Sample eligibility (quarantine)
+#
+# Excludes whole samples by NAME with a reason code, before any load. It is not
+# an exception handler: the adapter's integrity refusal is unchanged, and
+# frozen label ({0,1,2} + stored nodata 3) and validity (MK0_MNA == 1)
+# semantics are untouched.
+#
+# The SAME policy is applied to statistics fitting, so a sample excluded from
+# training cannot contribute to the parameters training uses.
+#
+# One sample is currently excluded: 1111004:df3d7e17-..., whose CONSUMED SL1
+# and MS1 channels carry 464 NaN pixels on positions all three Kuro validity
+# mechanisms declare valid. Evidence and the recovery assessment are in
+# docs/m5-source-data-quarantine.md.
+# -----------------------------------------------------------------------------
+quarantine:
+  enabled: true
+  path: null                 # resolves configs/quarantine/kuro_siwo.yaml
+  require_policy_file: true  # a missing policy must fail, not apply nothing
+
+# -----------------------------------------------------------------------------
 # Data loading
 #
 # Lazy and batched. The 7,052 locally available training tiles are never
@@ -183,11 +202,35 @@ augmentation:
   radiometric: false
 
 # -----------------------------------------------------------------------------
-# Normalisation — see the header. Blocked, on purpose.
+# Normalisation — FITTED 2026-10-09
+#
+# statistics_path points at a real artifact that now exists. It was fitted by
+#
+#   scripts/fit_statistics.py --config m5_kuro_sar_unet \
+#       --output artifacts/statistics/kuro_sar_fitted
+#
+# over 7,051 eligible official TRAINING samples (7,052 discovered, 1
+# quarantined), 279,310,909 valid pixels, activations 1111004/1111005/1111006,
+# through the exact reprojection and channel pipeline declared above. Fitting
+# before that pipeline existed would have been wrong in a way nothing could
+# detect: bilinear resampling changes the variance of the field it is applied
+# to, so a std fitted pre-resampling does not describe post-resampling input.
+# The artifact's own provenance records the spatial settings, so a mismatch
+# with a future run is detectable.
+#
+# THE ARTIFACT IS NOT COMMITTED. `artifacts/` is git-ignored, because it is
+# derived from a corpus this repository must not redistribute (C11). On a fresh
+# checkout the path will not resolve and the run will REFUSE TO START with the
+# remedy, which is the intended behaviour — far better than silently
+# normalising with something else.
+#
+# required_kind: fitted means development and reference artifacts are both
+# refused here. Reference values in particular are never substituted: their
+# pre/post basis, split basis and aggregation basis are all unstated upstream.
 # -----------------------------------------------------------------------------
 normalisation:
   enabled: true
-  statistics_path: null
+  statistics_path: "artifacts/statistics/kuro_sar_fitted"
   required_kind: "fitted"
   allow_development_statistics: false
 

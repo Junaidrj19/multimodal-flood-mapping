@@ -112,6 +112,12 @@ class KuroSiwoAdapter(DatasetAdapter):
     dataset_id = "kuro_siwo"
     _ENV = "FLOODMAP_KURO_SIWO_ROOT"
     _CLIP_MAX = 0.15
+    #: Epochs the frozen baseline actually consumes: SL1 as pre-event and MS1
+    #: as post-event (configs/data.yaml -> baseline_pre_selection). Pixels from
+    #: these reach a tensor, so they are validated strictly.
+    _CONSUMED_ROLES: tuple[str, ...] = ("SL1", "MS1")
+    #: Epochs recorded but never consumed. A defect here is reported, not fatal.
+    _DROPPED_ROLES: tuple[str, ...] = ("SL2",)
 
     def __init__(self, root: Optional[Path] = None):
         self.root = external_root(root, self._ENV)
@@ -324,28 +330,79 @@ class KuroSiwoAdapter(DatasetAdapter):
 
     def load_sample(self, sample_id: str) -> CanonicalSample:
         ref = self._ref_by_id(sample_id)
+
+        with rasterio.open(ref.validity_asset.path) as dataset:
+            mna = dataset.read(1)
+        declared_valid = mna == 1
+
         arrays: dict[str, dict[str, np.ndarray]] = {}
+        dropped_diagnostics: dict[str, dict[str, Any]] = {}
         for role, assets in ref.temporal_assets.items():
             arrays[role] = {}
+            consumed = role in self._CONSUMED_ROLES
             for pol, asset in assets.items():
                 with rasterio.open(asset.path) as dataset:
                     values = dataset.read(1).astype(np.float32, copy=False)
-                if not np.isfinite(values).all() or (values < 0).any():
-                    raise DatasetIntegrityError(f"Kuro linear SAR is not finite/non-negative: {asset.path}")
-                arrays[role][pol] = np.minimum(values, self._CLIP_MAX).astype(np.float32, copy=False)
+                non_finite = ~np.isfinite(values)
+                negative = values < 0
+                if consumed:
+                    # A defect in a channel the model actually reads is fatal.
+                    if non_finite.any() or negative.any():
+                        raise DatasetIntegrityError(
+                            f"Kuro linear SAR is not finite/non-negative: {asset.path}"
+                        )
+                elif non_finite.any() or negative.any():
+                    # SCOPE NARROWED 2026-10-09, with justification.
+                    #
+                    # `SL2` is the second pre-event epoch. The frozen baseline
+                    # selects `SL1` as pre and `MS1` as post
+                    # (configs/data.yaml -> baseline_pre_selection), records
+                    # SL2 in `dropped_sources`, and never puts an SL2 pixel in
+                    # a tensor. Rejecting the whole sample because a discarded
+                    # epoch is defective is an over-broad check: measured on
+                    # the delivery it costs one sample whose four consumed
+                    # channels are provably finite and non-negative.
+                    #
+                    # The narrowing is asymmetric and the defect is NOT
+                    # swallowed: it is counted, located against the declared
+                    # validity mask, and attached to the sample and its
+                    # provenance, so an auditor sees it without the sample
+                    # being unusable. See docs/m5-source-data-quarantine.md.
+                    dropped_diagnostics.setdefault(role, {})[pol] = {
+                        "path": str(asset.path),
+                        "non_finite_pixels": int(non_finite.sum()),
+                        "non_finite_on_declared_valid_pixels": int(
+                            (non_finite & declared_valid).sum()
+                        ),
+                        "negative_pixels": int(negative.sum()),
+                        "negative_on_declared_valid_pixels": int(
+                            (negative & declared_valid).sum()
+                        ),
+                        "consumed_by_baseline": False,
+                        "reason": (
+                            "defect in a dropped pre-event epoch; recorded rather than "
+                            "fatal because no pixel of this epoch reaches a tensor"
+                        ),
+                    }
+                arrays[role][pol] = np.minimum(values, self._CLIP_MAX).astype(
+                    np.float32, copy=False
+                )
 
         with rasterio.open(ref.label_asset.path) as dataset:
             labels = dataset.read(1)
-        with rasterio.open(ref.validity_asset.path) as dataset:
-            mna = dataset.read(1)
 
         stored = set(int(value) for value in np.unique(labels))
         if not stored.issubset({0, 1, 2, 3}):
             raise DatasetIntegrityError(f"Kuro label contains undeclared values: {sorted(stored)}")
         if not set(int(value) for value in np.unique(mna)).issubset({0, 1}):
             raise DatasetIntegrityError("Kuro MNA must contain only 0=invalid and 1=valid")
-        valid = mna == 1
+        valid = declared_valid
         label_invalid = labels == 3
+        # Unchanged: every epoch, including the dropped one, still participates
+        # in the SAR-zero cross-check. A non-finite value is not 0.0, so it
+        # does not register as the SAR nodata sentinel either way; narrowing
+        # the finiteness check above does not weaken this invariant, and the
+        # cross-check was verified to still agree on both affected samples.
         sar_invalid = np.logical_or.reduce(
             [np.logical_and.reduce([arrays[role][pol] == 0.0 for pol in ("vv", "vh")]) for role in arrays]
         )
@@ -418,6 +475,7 @@ class KuroSiwoAdapter(DatasetAdapter):
                 validity_mechanism=tuple(self.capabilities.validity_mechanisms),
                 source_files=source_files,
                 artifact=artifact,
+                dropped_source_diagnostics=dropped_diagnostics,
             ),
             preprocessing_state=PreprocessingState(
                 sar_representation="linear_sigma0",
@@ -430,4 +488,5 @@ class KuroSiwoAdapter(DatasetAdapter):
                 excluded_sources=("MK0_DEM", "MK0_SLOPE"),
             ),
             dropped_sources=("SL2", "MK0_DEM", "MK0_SLOPE"),
+            dropped_source_diagnostics=dropped_diagnostics,
         )
