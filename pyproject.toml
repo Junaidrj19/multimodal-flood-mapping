@@ -11,15 +11,22 @@ requires-python = ">=3.11"
 license = { text = "TODO: license not yet chosen for this repository" }
 authors = [{ name = "Mohammed Junaid" }]
 
-# Runtime dependencies for the implemented acquisition, provenance and M2
-# raster-preprocessing stages. Dependencies for later vector/model stages
-# remain deliberately deferred.
+# Runtime dependencies for the implemented acquisition, provenance, M2
+# raster-preprocessing and M5 segmentation-training stages. Dependencies for
+# later vector stages remain deliberately deferred.
+#
+# torch is lower-bounded, not pinned: the M5 baseline uses only long-stable
+# APIs (nn.Conv2d, CrossEntropyLoss(ignore_index=...), DataLoader, MPS/CUDA
+# device selection). Pinning an exact version would be a claim about
+# wheel availability on the target platforms that has not been verified.
+# Verified locally against torch 2.12.1 on macOS/arm64 (CPU and MPS).
 dependencies = [
     "numpy>=1.26",
     "pydantic>=2",
     "pyyaml>=6",
     "requests>=2.31",
     "rasterio>=1.4",
+    "torch>=2.2",
 ]
 
 [project.optional-dependencies]

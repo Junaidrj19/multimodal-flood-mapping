@@ -1,0 +1,567 @@
+# M5 — SAR Segmentation Training Baseline
+
+Training infrastructure for the first supervised flood segmentation baseline.
+Implemented in `src/floodmap/segmentation/`, configured in
+`configs/experiments/`, tested in `tests/test_segmentation_m5.py` and
+`tests/test_segmentation_m5_real.py`.
+
+**Status: infrastructure verified, baseline not trained.** The pipeline has
+been shown to execute and to learn on a handful of real tiles. No full training
+run has been launched, and no performance claim is made anywhere in this
+milestone.
+
+---
+
+## 1. The frozen baseline definition
+
+SAR only. Kuro Siwo labelled partition `01`. One pre-event epoch and one
+post-event epoch. Four channels. Three semantic classes.
+
+### 1.1 Input channels
+
+| Index | Name | Source | Temporal role | Polarisation |
+|---|---|---|---|---|
+| 0 | `pre_vv` | SL1 | pre-event, `crank == 1` | VV |
+| 1 | `pre_vh` | SL1 | pre-event, `crank == 1` | VH |
+| 2 | `post_vv` | MS1 | post-event, `master == true` | VV |
+| 3 | `post_vh` | MS1 | post-event, `master == true` | VH |
+
+The order is frozen in `segmentation/channels.py` as `CHANNEL_ORDER` and is
+recorded in both the statistics artifact and every checkpoint. Reordering it
+silently re-maps a trained model's first-layer weights, so the experiment
+config, the statistics artifact and the checkpoint loader each reject any other
+ordering rather than accepting it.
+
+Temporal roles are read from the M4 canonical sample (`sample.sar["pre"]` /
+`sample.sar["post"]`), which the adapter resolved from `info.json`
+`master`/`crank` fields. The filename prefix is never parsed here. `SL2`, the
+second pre-event epoch, stays recorded as a dropped source and is not used.
+
+### 1.2 Representation
+
+Linear sigma0, clipped at 0.15 by the M4 adapter. **Not converted to decibel.**
+
+`tensors.py` rejects any sample whose `sar_representation` is not
+`linear_sigma0`. That check is load-bearing rather than defensive:
+Sen1Floods11 is delivered in decibel, and feeding it through statistics fitted
+on linear sigma0 would be a silent ~20 dB offset producing plausible, wrong
+output.
+
+### 1.3 Explicitly excluded from this baseline
+
+Sentinel-2, Copernicus DEM, Kuro's bundled `MK0_DEM` and `MK0_SLOPE`, OSM,
+roads, buildings, handcrafted indices, the `SL2` epoch, speckle filtering,
+decibel conversion, radiometric augmentation, pretrained weights and class
+weighting.
+
+None of these are excluded because they are useless. A clean SAR pre/post
+reference has to exist before anything can be shown to improve on it
+(`AGENTS.md` §5). `configs/data.yaml -> m4_contract.baseline` already freezes
+the SAR-only scope, and the experiment config validator rejects a fifth channel
+or a non-null `pretrained_weights`.
+
+---
+
+## 2. Dataset to tensor pipeline
+
+```
+KuroSiwoAdapter  (M4 — catalogue/export check, partition-01 filter,
+       |          temporal-role resolution, 3-way validity cross-check)
+       v
+CanonicalSample
+       |
+       v
+KuroSiwoSarDataset.__getitem__      (lazy, one sample at a time)
+       |
+       +-- stack_channels      -> image      float32 [4, H, W]
+       +-- labels + validity   -> target     int64   [H, W]
+       +-- validity            -> valid_mask bool    [H, W]
+       |
+       +-- (optional) normalisation: (image - mean) / std
+       +-- (optional) joint geometric augmentation
+       v
+collate_samples -> DataLoader
+```
+
+M5 consumes the M4 boundary and **never re-scans the Kuro directory tree**.
+That matters beyond tidiness: the adapter is where the catalogue/export
+consistency check, the partition-01 filter and the three redundant validity
+cross-checks live. A dataset that globbed the corpus itself would skip all of
+them and would ingest label-free partition-00 tiles.
+
+### 2.1 Tensor contract
+
+| Payload | Shape | dtype |
+|---|---|---|
+| `image` | `[4, H, W]` | `float32` |
+| `target` | `[H, W]` | `int64` |
+| `valid_mask` | `[H, W]` | `bool` |
+
+All locally delivered Kuro tiles are 224×224.
+
+### 2.2 Memory
+
+Lazy and indexed. `KuroSiwoSarDataset.__init__` holds only the adapter's
+lightweight sample references; pixels are read in `__getitem__`. The 7,052
+locally available training tiles are never materialised together. Two tests
+pin this: one counts `load_sample` calls during construction, one asserts no
+decoded array is retained on the dataset object.
+
+---
+
+## 3. Labels and ignore handling
+
+| Stored value | Meaning | Trainable |
+|---|---|---|
+| 0 | No water | yes |
+| 1 | Permanent Waters | yes |
+| 2 | Floods | yes |
+| 3 | nodata (in-band sentinel) | **no — ignore index** |
+
+Semantic classes are `{0, 1, 2}`. Kuro's native values already *are* the class
+indices, so the identity mapping is **asserted, not applied**: a corpus with a
+different encoding fails loudly instead of being silently mis-labelled.
+
+Validity comes from the M4 canonical mask (Kuro `MK0_MNA == 1`), not from the
+label raster, so Kuro's redundant mechanisms stay independently cross-checkable
+instead of being collapsed into one.
+
+```
+target[valid]   in {0, 1, 2}
+target[~valid]  == 3   (ignore_index)
+```
+
+Three invariants, each tested:
+
+- nodata does **not** become a fourth trainable class — the model emits 3
+  logits, and `num_classes: 4` is rejected by the config validator;
+- `ignore_index` 3 is an **input-side** concern and is deliberately a different
+  number from the output nodata 255 (`configs/segmentation.yaml -> output`);
+- an `ignore_index` colliding with a semantic class is rejected.
+
+### 3.1 Invalid pixels do not contribute to the loss
+
+Handled by `CrossEntropyLoss(ignore_index=3)`, which excludes those positions
+from both the loss value and the backward pass. This is verified rather than
+assumed, at three levels:
+
+1. synthetic logits — perturbing only ignored positions does not change the
+   loss, and those positions receive exactly zero gradient;
+2. end-to-end on the synthetic fixture, through the real mask and target;
+3. **on real Kuro tiles**, where nodata covers a non-trivial fraction of every
+   tile (`test_overfit_does_not_learn_from_ignored_pixels`).
+
+---
+
+## 4. Normalisation
+
+**NO FITTED STATISTICS EXIST.** M5 builds the fitting mechanism and the
+artifact; it does not invent values.
+
+### 4.1 Four kinds, three of them contractual
+
+| Kind | Source | May normalise? |
+|---|---|---|
+| `reference` | Kuro's published `data_mean`/`data_std` | **No** |
+| `fitted` | our parameters, training split only | Yes |
+| `validation` | measured on validation data | **No** — drift reporting only |
+| `development` | identity transform, no data read | **No** — not part of the contract |
+
+`reference` values are refused as fitted parameters because their pre/post
+basis, split basis and aggregation basis are all unstated upstream; adopting
+them would normalise our data by an unknown recipe. `StatisticsArtifact.require_fitted()`
+raises for every kind except `fitted`.
+
+### 4.2 Fitting
+
+`fit_training_statistics()`:
+
+- **training split only** — raises on any sample whose split is not `train`, so
+  a mistaken caller cannot leak validation or test data into the parameters;
+- **respects the validity mask** — accumulates only pixels the M4 canonical
+  mask marks valid. Invalid SAR pixels are stored as `0.0`, so counting them
+  would drag every mean toward zero. A test asserts the masked and unmasked
+  means actually differ on the fixture, so the check cannot pass vacuously;
+- **streaming** — count, sum and sum-of-squares per channel, so no tile stack is
+  materialised and the full training split never has to fit in RAM;
+- **records** the activations used, tile count, valid-pixel count, channel order,
+  representation, clip state, preprocessing state, temporal-role basis and
+  aggregation basis.
+
+Aggregation is **per valid pixel, pooled across tiles** — recorded explicitly
+because a per-tile-then-average basis gives a different answer on tiles with
+differing valid fractions, and that ambiguity is exactly what makes the
+upstream reference values unusable.
+
+### 4.3 Artifact layout (C5)
+
+A sidecar **pair**, not one wrapped file:
+
+- `statistics.json` — flat, float-only, `channel_name -> {mean, std}`.
+  The layout is forced rather than chosen: `floodmap.features.pipeline` coerces
+  `float()` over every value of every top-level key, so an embedded provenance
+  block would raise there.
+- `statistics_meta.json` — provenance. All 16 required fields from
+  `configs/data.yaml -> m4_contract.statistics.provenance_required_fields` are
+  answered; `StatisticsArtifact` refuses to construct without them, and
+  `read()` refuses a pair with a missing half.
+
+Fit one with:
+
+```bash
+FLOODMAP_KURO_SIWO_ROOT=/path/to/kuro_siwo \
+  python3 scripts/fit_statistics.py --output artifacts/statistics/kuro_sar_fitted
+```
+
+### 4.4 Development vs fitted
+
+The two are kept visibly distinct. A development artifact is an **identity
+transform** (mean 0, std 1) that reads no data and carries
+`development_only: true`, `usable_for_reported_results: false` and
+`is_part_of_frozen_contract: false`. Identity is deliberate: it leaves the
+linear sigma0 values exactly as the adapter produced them, so a failing test
+points at the pipeline rather than at an invented scaling.
+
+An experiment must opt in explicitly — `required_kind: development` paired with
+`allow_development_statistics: true`, or the config is rejected. Every run
+record and checkpoint carries the statistics kind, so a development run cannot
+be mistaken for a fitted one after the fact.
+
+The real baseline config is therefore **loadable but not runnable**:
+`statistics_path` stays `null` because C5 states plainly that a declared
+artifact which does not exist is worse than none, so it is *not* pre-filled with
+the path the artifact will eventually occupy. `train.resolve_statistics` raises
+with the remedy instead.
+
+---
+
+## 5. Model
+
+A small, conventional U-Net. `segmentation/model.py`.
+
+- input channels 4, output logits 3;
+- configurable `base_channels` and `depth`;
+- double 3×3 conv + BatchNorm + ReLU, 2×2 max pool down, transposed conv up,
+  skip concatenation, 1×1 conv to logits;
+- **no pretrained weights** — no undeclared external training corpus in the
+  provenance chain, and no ImageNet 3-channel adapter hack for 4-channel SAR;
+- **no transformer, no attention**;
+- deterministic initialisation from an explicit seed.
+
+Default baseline config is `base_channels: 32, depth: 4` → 7,763,395 parameters.
+
+`forward` rejects a spatial size not divisible by `2 ** depth`, rather than
+failing with a shape mismatch deep inside the decoder.
+
+Model construction also **restores the global RNG state** when seeded.
+`nn.Conv2d.__init__` runs `kaiming_uniform_` against the global stream, so
+without this, dataloader shuffling would depend on whether a model happened to
+be constructed first and two same-seed runs would see their batches in
+different orders.
+
+**This is a reference model, not a selected architecture.**
+`configs/segmentation.yaml` still carries `model.architecture: null` because
+that choice must follow measured performance (`AGENTS.md` §5). See §9.
+
+---
+
+## 6. Loss
+
+**Unweighted** `CrossEntropyLoss(ignore_index=3)`.
+
+Class weighting is *supported* by configuration and is **never applied by
+default**, and no weight vector is computed or guessed. Inverse-frequency
+weights look principled and are not: on this corpus the frequencies depend on
+which activations happen to be delivered locally — activation 1111004 alone is
+71% of the available training tiles — so a weight fitted from them would encode
+a delivery accident rather than the phenomenon.
+
+No composite loss. Dice, Tversky, focal and Lovász all change what the
+optimiser considers an improvement; adding one before a plain cross-entropy
+reference exists would make any later gain unattributable. The config validator
+rejects any `loss.name` other than `cross_entropy`.
+
+A supplied weight vector of the wrong length is rejected rather than broadcast.
+
+---
+
+## 7. Metrics
+
+All derived from one 3×3 confusion matrix accumulated across batches, never
+averaged per batch. Per-batch IoU averaged over batches is not the dataset IoU,
+and the difference is largest exactly where it matters here: a batch with few
+or no flood pixels yields an unstable or undefined flood IoU that then
+contaminates the average. A test pins this (`3/4`, not the mean of `1/2` and `1`).
+
+Reported:
+
+- per-class IoU, precision, recall, F1, support
+- **flood-class IoU (class 2) — the primary metric (C6)**
+- mean IoU (macro), micro IoU, macro F1, pixel accuracy
+- the full confusion matrix (rows truth, columns prediction)
+
+Ignored pixels are removed **before** accumulation, on the target. Nodata is
+6.48% of Kuro label pixels and the model emits a confident prediction for every
+one; counting them would inflate "No water" performance with pixels that were
+never observed.
+
+A class with no support scores `nan` and is **dropped** from macro aggregates
+rather than counted as zero — scoring an absent class as 0.0 would drag mean IoU
+down by a third on a tile that simply contains no permanent water, which is a
+property of the tile and not of the model.
+
+---
+
+## 8. Training, selection and reproducibility
+
+`run_training()` in `segmentation/train.py`.
+
+### 8.1 Selection discipline
+
+Best checkpoint = **highest validation flood-class IoU** (C6:
+`monitor: val_iou_flood_class`, `mode: max`, `selection_split: validation`).
+
+**The test split is never loaded by this module at all** — not read, not scored,
+not used for early stopping. The strongest way to avoid optimising the test
+split is to have no code path that touches it, and a test asserts the string
+`"test"` does not appear in `train.py`. The config validator additionally
+rejects `selection_split: test` and `validation_split: test`.
+
+A `nan` flood IoU never wins selection, so a degenerate epoch cannot be chosen.
+Validation runs under `torch.no_grad` with augmentation disabled — a flipped
+validation tile would score a different, unrepeatable number each epoch.
+
+### 8.2 Reproducibility
+
+Seeding covers Python, NumPy and Torch, plus cuDNN determinism flags.
+`torch.use_deterministic_algorithms(True)` is deliberately **not** set: it raises
+on several ordinary convolution and pooling backward kernels and would make the
+baseline unrunnable. The weaker guarantee is stated rather than overstated.
+
+Every run writes `run_record.json` containing the experiment config, resolved
+seed, dataset identity (corpus, split, activation ids, sample count),
+statistics identity, device, availability of each backend, commit, model
+parameter count, loss weighting and per-epoch metrics.
+
+Two tests pin that identical seeds give identical loss trajectories and that a
+different seed changes them.
+
+### 8.3 Checkpoint artifact
+
+Each checkpoint stores model state, optimizer state, epoch, validation flood
+IoU, full experiment config, statistics identity, dataset identity, seed,
+channel order and commit. A checkpoint holding only weights would be
+unreproducible — nothing in it would say which normalisation its inputs were
+scaled by, and feeding a model statistics it was not fitted with produces
+plausible, wrong output. `load_checkpoint` rejects a checkpoint whose channel
+order differs from the current frozen order.
+
+Checkpoints are **never committed**. `.gitignore` excludes `runs/*`, `models/*`,
+`artifacts/*`, `*.pt`, `*.pth`, `*.ckpt` and `*.safetensors`.
+
+### 8.4 Device
+
+Priority: explicit config → CUDA → MPS → CPU. An explicitly requested device
+that is unavailable **raises** rather than falling back — a run meant for a GPU
+that quietly spent hours on CPU is worse than one that refused to start.
+Nothing requires a GPU; unit tests run on CPU, and CUDA/MPS paths are tested
+when the hardware exists.
+
+---
+
+## 9. Augmentation
+
+**Disabled for baseline 1**, and configurable.
+
+Only exact lattice operations are eligible — flips and 90° rotations permute
+pixels without resampling, so they cannot manufacture a backscatter value the
+sensor never measured.
+
+Any spatial transform is drawn **once per sample** and applied identically to
+all four channels, the target and the validity mask. Augmenting channels
+independently would destroy the pre/post pixel correspondence the change signal
+depends on; augmenting the image without the target would silently mis-align
+supervision. A test brute-force searches all 16 flip/rotation combinations and
+asserts one single transform reproduces all three payloads.
+
+Not permitted:
+
+- **radiometric** (brightness, contrast, gamma, additive noise) — sigma0 *is*
+  the measurement, and scaling it trains on a physically meaningless
+  distribution. The config validator rejects `radiometric: true` rather than
+  merely defaulting it off;
+- **synthetic speckle** — Kuro arrives already Lee Sigma filtered
+  (`configs/data.yaml` C4), so injecting speckle would move training data
+  further from both the corpus and the unfiltered production path.
+
+---
+
+## 10. Configuration
+
+Experiment settings live in `configs/experiments/`, never defaulted in the
+training script (`AGENTS.md` §14).
+
+| File | Purpose | Runnable |
+|---|---|---|
+| `m5_kuro_sar_unet.yaml` | the real baseline | **No** — blocked on fitted statistics |
+| `m5_kuro_sar_unet_dev.yaml` | pipeline verification for smoke/overfit tests | Yes |
+
+Exposed: dataset, splits, channel definition, batch size, dataloader workers,
+epochs, learning rate, optimizer, seed, determinism, model parameters, loss
+parameters, ignore index, metric selection, checkpoint directory and criterion,
+statistics artifact, augmentation and device.
+
+Every model is `extra="forbid"`: a mistyped key is rejected rather than silently
+ignored, which is how a run ends up not doing what its config appears to say.
+
+### 10.1 Why a separate file from `configs/segmentation.yaml`
+
+`configs/segmentation.yaml` is part of the frozen contract and deliberately
+keeps `model.architecture: null`, `model.encoder: null`, `model.candidates: []`
+and every `training.*` hyperparameter `null`, because the project has not
+**selected** an architecture or a hyperparameter set — it has only proposed a
+first baseline to measure.
+
+The two files answer different questions. `segmentation.yaml` says what is
+**frozen**; an experiment config says what one **run** did. Writing this
+experiment's values into those fields would silently promote a candidate into a
+project-level decision, so M5 changes **nothing** in that file. A test asserts
+it still defers every one of those decisions.
+
+### 10.2 Entrypoints
+
+```bash
+# Inspect a config without training
+python3 scripts/train_segmentation.py --config m5_kuro_sar_unet --describe
+
+# Fit training statistics (training split only)
+FLOODMAP_KURO_SIWO_ROOT=... python3 scripts/fit_statistics.py \
+    --output artifacts/statistics/kuro_sar_fitted
+
+# Bounded pipeline-verification run
+FLOODMAP_KURO_SIWO_ROOT=... python3 scripts/train_segmentation.py \
+    --config m5_kuro_sar_unet_dev --run-dir runs/dev
+```
+
+---
+
+## 11. Verification performed
+
+### 11.1 Smoke test — 4 real training tiles, 1 epoch
+
+Chain verified: adapter → canonical sample → tensor → model → loss →
+`backward()` → `optimizer.step()` → validation → checkpoint, both by hand and
+through `run_training`. Gradients non-zero, parameters changed, metrics
+computed with nodata excluded, checkpoint saved, reloaded and reproducing
+identical logits.
+
+### 11.2 Overfit test — 4 fixed real tiles, 60 iterations
+
+| Check | Result |
+|---|---|
+| gradients non-zero | yes |
+| loss decreases | **1.55335 → 0.02781** (98.2% reduction) |
+| parameters change | yes |
+| predictions change | yes |
+| train flood IoU improves | **0.0329 → 0.5885** |
+| checkpoint loads | yes, reproduces trained logits |
+
+The subset contained all three semantic classes. **This is a pipeline
+correctness result, not a performance result** — a model that fits four tiles
+has memorised four tiles. Its only meaning is that the pipeline is capable of
+learning, which rules out a detached graph, a mask on the wrong axis, an
+all-ignored target and constant inputs.
+
+### 11.3 Bounded statistics fit on real tiles
+
+Over 4 real training tiles, valid pixels only:
+
+```
+mean = [0.11451, 0.03792, 0.11253, 0.03775]   # pre_vv, pre_vh, post_vv, post_vh
+std  = [0.03612, 0.01507, 0.03589, 0.01547]
+```
+
+Plausible for linear sigma0 clipped at 0.15, and **not** near the −10 to −15 a
+decibel product would give — an independent confirmation of the representation.
+These are close to the `measured_subset_2026_10_08` values already recorded in
+`configs/data.yaml` (VV 0.1180, VH 0.0373). **These are not the project's fitted
+statistics**: 4 tiles from one activation, and the artifact records `n_tiles` so
+they cannot be mistaken for a full-split fit.
+
+### 11.4 No full training run was launched
+
+Only unit tests, the tiny smoke test and the tiny overfit test were executed.
+No multi-epoch run over the 7,052 training tiles, no long-lived process.
+
+---
+
+## 12. M4 defect found and fixed
+
+The M4 Kuro adapter **crashed on the real delivery**.
+`_read_exported_catalogue` filtered only `exported == 1`, then called
+`int(row["aoiid"])`. Partition-00 (unlabelled) rows carry `aoiid = NULL` with
+`exported = 1` — exactly as `configs/data.yaml -> partition_contract` records —
+so discovery raised `TypeError: int() argument must be ... not 'NoneType'`.
+The M4 synthetic fixtures never contained such a row and the external smoke
+test was skipped, so it was never exercised.
+
+Fix: filter `aoiid == 1` alongside `exported == 1`, which is the
+labelled-partition filter the partition contract already specifies. Grouping
+those rows first would also have corrupted the 3-row triplet check. The original
+post-group assertion is kept as a defensive invariant.
+
+Verified across all 5 local activations: every labelled grid count now matches
+its on-disk partition-01 directory count exactly, every grid has exactly 3 rows,
+and NULL-`aoiid` grid ids never overlap labelled ones.
+
+| Activation | Split | NULL-`aoiid` grids | Labelled grids | On disk |
+|---|---|---|---|---|
+| 1111002 | test | 2 | 32 | 32 |
+| 1111003 | validation | 0 | 19 | 19 |
+| 1111004 | train | 0 | 5001 | 5001 |
+| 1111005 | train | 1 | 1369 | 1369 |
+| 1111006 | train | 4 | 682 | 682 |
+
+Two regression tests were added to `tests/test_dataset_adapters.py`: one proves
+NULL-`aoiid` rows are filtered, one proves the labelled-partition check was not
+weakened by the filter.
+
+---
+
+## 13. Known limitations
+
+1. **Validation is one activation, 19 tiles.** `configs/evaluation.yaml` already
+   records `min_validation_activations_for_a_reportable_threshold: 2` against
+   `validation_activations_available_locally: 1`. The checkpoint-selection
+   mechanism is implemented and exercised, but **any number it produces on 19
+   tiles is infrastructure evidence, not a performance claim**. One activation
+   cannot separate event-specific from generalisable behaviour.
+
+2. **No fitted statistics.** The real baseline config cannot run until they are
+   fitted. This is intentional.
+
+3. **Train/serve texture mismatch remains.** Kuro arrives Lee Sigma filtered and
+   cannot be un-filtered; our production path is unfiltered (`configs/data.yaml`
+   C4). Disclosed, not closed, and must be quantified by ablation before any
+   transfer claim.
+
+4. **The local delivery is a subset.** 5 of 45 catalogued activations; 3 of 27
+   official training activations, with 1111004 alone contributing 71% of
+   available training tiles. Geographically skewed.
+
+5. **No resampling to the canonical grid.** M5 trains on the source 224×224
+   EPSG:3857 tiles as the M4 adapter presents them. The canonical 10 m UTM
+   target grid (C1/C2) is recorded on each sample but is a later preprocessing
+   concern; this is a train/serve difference that must be resolved before
+   production inference.
+
+6. **Determinism is partial** — cuDNN flags only, not
+   `use_deterministic_algorithms`. See §8.2.
+
+---
+
+## 14. Next step
+
+Fit training statistics over the available training split, then run the real
+baseline. Reporting any flood-IoU number as a result additionally requires
+resolving limitation 1.

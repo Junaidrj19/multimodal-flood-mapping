@@ -26,6 +26,17 @@ artifacts/*
 !artifacts/.gitkeep
 
 # ---------------------------------------------------------------------------
+# Training runs (M5)
+#
+# `runs/` holds per-experiment checkpoints and run records. Nothing in it is
+# committable: checkpoints are large binaries and a run record names absolute
+# external dataset paths. Contents are excluded rather than the directory, for
+# the same reason as the data/ tree above.
+# ---------------------------------------------------------------------------
+runs/*
+!runs/.gitkeep
+
+# ---------------------------------------------------------------------------
 # Geospatial / raster payloads
 #
 # Belt-and-braces against a large binary landing outside the paths above.
@@ -63,6 +74,7 @@ artifacts/*
 *.onnx
 *.joblib
 *.pkl
+*.safetensors
 
 # ---------------------------------------------------------------------------
 # Python

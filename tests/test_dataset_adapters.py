@@ -47,9 +47,11 @@ def _write_raster(path: Path, array: np.ndarray, *, crs: str, transform, nodata=
             dst.descriptions = tuple(descriptions)
 
 
-def _write_kuro_catalogue(root: Path, activation: int, rows: list[tuple[str, int, int, int]]):
+def _write_kuro_catalogue(root: Path, activation: int, rows: list[tuple[str, int, int, int]], *, extra_rows=()):
     path = root / str(activation) / "catalogue.gkpg"
     connection = sqlite3.connect(path)
+    # Rewritable so a test can replace the fixture's catalogue in place.
+    connection.execute("DROP TABLE IF EXISTS catalogue")
     connection.execute(
         "CREATE TABLE catalogue (grid_id TEXT, actid INTEGER, aoiid INTEGER, "
         "exported INTEGER, master INTEGER, crank INTEGER, source_date TEXT, s1_ids TEXT)"
@@ -58,6 +60,11 @@ def _write_kuro_catalogue(root: Path, activation: int, rows: list[tuple[str, int
         connection.execute(
             "INSERT INTO catalogue VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (grid_id, activation, 1, exported, master, crank, "2020-01-01", "[]"),
+        )
+    for grid_id, aoiid, exported, master, crank in extra_rows:
+        connection.execute(
+            "INSERT INTO catalogue VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (grid_id, activation, aoiid, exported, master, crank, "2020-01-01", "[]"),
         )
     connection.commit()
     connection.close()
@@ -206,6 +213,49 @@ class TestKuroSiwoAdapter:
             dataset.write(values, 1)
         with pytest.raises(DatasetIntegrityError, match="MLU|SAR"):
             KuroSiwoAdapter(kuro_root).load_sample(ref.sample_id)
+
+    def test_unlabelled_partition_rows_with_null_aoiid_are_filtered(self, kuro_root):
+        """Regression: the real delivery crashed discovery on `int(None)`.
+
+        The catalogue describes BOTH partitions. Partition 00 (unlabelled) rows
+        carry ``aoiid = NULL`` with ``exported = 1``, which is exactly what
+        ``configs/data.yaml -> partition_contract`` records. Measured on the
+        local delivery, 3 of 5 activations contain such rows (1111002: 2 grids,
+        1111005: 1, 1111006: 4), and none of their grid ids overlap a labelled
+        grid. They must be filtered, not asserted against: the previous code
+        grouped them first and then called ``int(row["aoiid"])``, which raised
+        TypeError before any useful message was produced.
+        """
+        activation = 1111003
+        grid = "11111111-1111-1111-1111-111111111111"
+        _write_kuro_catalogue(
+            kuro_root,
+            activation,
+            [(grid, 1, 0, 1), (grid, 1, 0, 2), (grid, 1, 1, 1)],
+            # One partition-00 triplet: exported, but no AOI id and no labels.
+            extra_rows=[
+                ("unlabelled-00", None, 1, 0, 1),
+                ("unlabelled-00", None, 1, 0, 2),
+                ("unlabelled-00", None, 1, 1, 1),
+            ],
+        )
+        refs = KuroSiwoAdapter(kuro_root).discover()
+        assert [ref.grid_id for ref in refs] == [grid]
+
+    def test_a_labelled_grid_with_a_non_unit_aoiid_is_still_rejected(self, kuro_root):
+        """Filtering partition 00 must not weaken the labelled-partition check."""
+        activation = 1111003
+        grid = "11111111-1111-1111-1111-111111111111"
+        _write_kuro_catalogue(
+            kuro_root,
+            activation,
+            [(grid, 1, 0, 1), (grid, 1, 0, 2)],
+            # Third row of the SAME grid claims a different AOI, so the triplet
+            # is incomplete under the labelled filter.
+            extra_rows=[(grid, 2, 1, 1, 1)],
+        )
+        with pytest.raises(DatasetDiscoveryError, match="expected 3"):
+            KuroSiwoAdapter(kuro_root).discover()
 
 
 class TestSen1Floods11Adapter:

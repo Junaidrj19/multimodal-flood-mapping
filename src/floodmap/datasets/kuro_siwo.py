@@ -211,6 +211,14 @@ class KuroSiwoAdapter(DatasetAdapter):
                 continue
             if int(row["exported"]) != 1:
                 continue
+            # The catalogue describes BOTH partitions. Partition 00 (unlabelled)
+            # rows carry aoiid NULL and exported 1, exactly as recorded in
+            # configs/data.yaml -> partition_contract. They are not labelled
+            # samples, so they are filtered here rather than asserted against
+            # below: `int(None)` raised TypeError on the real delivery, and
+            # grouping them first would also corrupt the 3-row triplet check.
+            if row["aoiid"] is None or int(row["aoiid"]) != 1:
+                continue
             record = dict(row)
             groups.setdefault(str(record["grid_id"]), []).append(record)
         result: dict[str, dict[str, Any]] = {}
@@ -219,7 +227,9 @@ class KuroSiwoAdapter(DatasetAdapter):
                 raise DatasetDiscoveryError(
                     f"Kuro catalogue grid {grid_id} has {len(records)} exported rows, expected 3"
                 )
-            if any(int(row["aoiid"]) != 1 for row in records):
+            # Redundant after the filter above, kept as a defensive invariant so a
+            # future change to the row filter cannot silently admit partition 00.
+            if any(row["aoiid"] is None or int(row["aoiid"]) != 1 for row in records):
                 raise DatasetDiscoveryError(f"Kuro catalogue AOI is not labelled partition 01: {grid_id}")
             roles = {(bool(row["master"]), int(row["crank"])) for row in records}
             if roles != {(False, 1), (False, 2), (True, 1)}:
