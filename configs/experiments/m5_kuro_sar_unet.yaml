@@ -1,0 +1,257 @@
+# =============================================================================
+# configs/experiments/m5_kuro_sar_unet.yaml
+#
+# M5 BASELINE 1 — Kuro Siwo, SAR-only, pre/post, 4-channel, 3-class.
+#
+# STATUS: READY TO RUN (statistics fitted 2026-10-09; not yet trained).
+#
+# Fitted training statistics now exist and `normalisation.statistics_path`
+# points at them — see that block below for how they were produced and why the
+# artifact itself is not committed. The remaining blocker on REPORTING a result
+# is evaluation data, not pipeline state: only one validation activation
+# (19 tiles) is available locally, below the minimum of 2 recorded in
+# configs/evaluation.yaml, so any flood-IoU number this config produces is
+# pipeline evidence rather than a measurement.
+#
+# WHY THIS FILE EXISTS SEPARATELY FROM configs/segmentation.yaml.
+# That file is part of the frozen contract and keeps `model.architecture: null`
+# and every `training.*` hyperparameter null, because the project has not
+# SELECTED an architecture or a hyperparameter set (AGENTS.md §5). It has only
+# proposed a first baseline to measure. The two files answer different
+# questions: segmentation.yaml says what is FROZEN, this says what one RUN did.
+# Writing these values into segmentation.yaml would silently promote a
+# candidate into a project-level decision.
+#
+# WHAT IS NOT IN THIS BASELINE, on purpose: Sentinel-2, DEM, slope, OSM, roads,
+# buildings, handcrafted indices, SL2 (the second pre-event epoch), speckle
+# filtering, decibel conversion, radiometric augmentation, pretrained weights
+# and class weighting. A clean SAR pre/post reference has to exist before
+# anything can be shown to improve on it.
+# =============================================================================
+
+name: "m5_kuro_sar_unet"
+version: "1.0.0"
+status: "ready_to_run"
+description: >-
+  First supervised flood segmentation baseline. Kuro Siwo labelled partition
+  01, SAR only, SL1 pre-event and MS1 post-event, VV and VH, linear sigma0
+  clipped at 0.15 by the M4 adapter. Three semantic classes with stored label 3
+  as the ignore index.
+
+# C6 — frozen. Reported metrics are broader (see metrics module); this is the
+# one that selection optimises.
+primary_metric: "iou_flood_class"
+
+# -----------------------------------------------------------------------------
+# Dataset
+#
+# `root: null` means the external root comes from FLOODMAP_KURO_SIWO_ROOT. No
+# absolute local dataset path is embedded in a committed file (M4 policy).
+# -----------------------------------------------------------------------------
+dataset:
+  id: "kuro_siwo"
+  root_env: "FLOODMAP_KURO_SIWO_ROOT"
+  root: null
+  train_split: "train"
+  validation_split: "validation"
+  # FROZEN channel order. Index 0/1 are the pre-event epoch, 2/3 post-event.
+  # Reordering silently re-maps a trained model's first-layer weights, so the
+  # loader rejects any other ordering rather than accepting it.
+  channels:
+    - "pre_vv"      # 0 — SL1 (crank 1) VV
+    - "pre_vh"      # 1 — SL1 (crank 1) VH
+    - "post_vv"     # 2 — MS1 (master)  VV
+    - "post_vh"     # 3 — MS1 (master)  VH
+  # Not converted to decibel. The adapter delivers linear sigma0 and the
+  # fitted statistics will be in that domain.
+  representation: "linear_sigma0"
+  # Kuro's in-band label nodata sentinel. INPUT-side only; the output nodata is
+  # 255 and is a deliberately different number.
+  ignore_index: 3
+  limit_train: null
+  limit_validation: null
+
+# -----------------------------------------------------------------------------
+# Canonical-grid reprojection — SHARED with M2 production preprocessing
+#
+# ENABLED, because the alternative is a spatial train/serve mismatch. Kuro is
+# delivered on an EPSG:3857 grid whose pixels are 10 PROJECTED UNITS, which is
+# 8.736-9.798 m of true ground across the five delivered activations and ~5 m
+# near 60N. Production inference serves genuinely 10 m Sentinel-1 IW GRDH. The
+# M4 adapter records target-grid METADATA but performs no reprojection, and
+# metadata alone is not reprojection.
+#
+# The implementation is floodmap.preprocessing.reprojection, called by both
+# this training path and M2. One code path, so the two cannot drift.
+#
+# tile_size is REQUIRED here and is not a free choice. A 224 px source tile
+# resampled to 10 m yields a footprint-sized output that VARIES per activation,
+# measured on the local delivery as:
+#   1111002 219x220    1111003 220x222    1111004 201x203
+#   1111005 216x217    1111006 217x218
+# A dataset returning variable shapes cannot be collated into a batch, so the
+# pixel count must be fixed. 224 is chosen because it is the smallest
+# 2**depth-divisible size that CROPS NO ACTIVATION (the largest natural
+# footprint is 222). A smaller value such as 208 would waste less area on
+# 1111004 but would crop four of the five activations, and cropping discards
+# real labelled observations whereas padding only adds pixels that
+# ignore_index excludes from loss and metrics anyway. The cost of 224 is
+# therefore compute on ignored pixels, not data.
+#
+# nodata_mode: strict means a target pixel is valid only if its entire
+# interpolation kernel came from valid source pixels. Kuro stores invalid SAR
+# as 0.0, which is indistinguishable from genuine near-zero backscatter once it
+# enters a bilinear kernel — and near-zero backscatter IS the open-water
+# signal. Strict discards a thin fringe around every nodata region; measured
+# against the permissive 'majority' alternative on one tile per activation that
+# fringe costs 0.0-0.8% of valid pixels, so the conservative choice is close to
+# free. It is the correct direction to err regardless.
+# -----------------------------------------------------------------------------
+reprojection:
+  enabled: true
+  resolution_m: 10.0        # true ground metres, in the per-sample UTM CRS
+  tile_size: 224
+  sar_resampling: "bilinear"   # in LINEAR POWER, before any dB conversion (C3)
+  label_resampling: "nearest"  # bilinear on a 0/2 boundary would yield class 1
+  nodata_mode: "strict"
+
+# -----------------------------------------------------------------------------
+# Sample eligibility (quarantine)
+#
+# Excludes whole samples by NAME with a reason code, before any load. It is not
+# an exception handler: the adapter's integrity refusal is unchanged, and
+# frozen label ({0,1,2} + stored nodata 3) and validity (MK0_MNA == 1)
+# semantics are untouched.
+#
+# The SAME policy is applied to statistics fitting, so a sample excluded from
+# training cannot contribute to the parameters training uses.
+#
+# One sample is currently excluded: 1111004:df3d7e17-..., whose CONSUMED SL1
+# and MS1 channels carry 464 NaN pixels on positions all three Kuro validity
+# mechanisms declare valid. Evidence and the recovery assessment are in
+# docs/m5-source-data-quarantine.md.
+# -----------------------------------------------------------------------------
+quarantine:
+  enabled: true
+  path: null                 # resolves configs/quarantine/kuro_siwo.yaml
+  require_policy_file: true  # a missing policy must fail, not apply nothing
+
+# -----------------------------------------------------------------------------
+# Data loading
+#
+# Lazy and batched. The 7,052 locally available training tiles are never
+# materialised together.
+# -----------------------------------------------------------------------------
+dataloader:
+  batch_size: 8
+  num_workers: 4
+  shuffle_train: true
+  drop_last: false
+  pin_memory: false
+  persistent_workers: true
+  prefetch_factor: 2
+
+# -----------------------------------------------------------------------------
+# Model — a REFERENCE baseline, not a selected architecture
+# -----------------------------------------------------------------------------
+model:
+  architecture: "unet"
+  in_channels: 4
+  # Three SEMANTIC classes. The nodata sentinel gets no logit.
+  num_classes: 3
+  base_channels: 32
+  depth: 4
+  pretrained_weights: null
+
+# -----------------------------------------------------------------------------
+# Loss
+#
+# UNWEIGHTED cross entropy. Flood pixels are a minority, so weighting is an
+# obvious thing to try and is supported below — but no weight vector is
+# guessed. Inverse-frequency weights computed from the local delivery would
+# encode a delivery accident (activation 1111004 alone is 71% of available
+# training tiles), not the phenomenon.
+# -----------------------------------------------------------------------------
+loss:
+  name: "cross_entropy"
+  ignore_index: 3
+  class_weights: null
+
+optimizer:
+  name: "adam"
+  learning_rate: 0.001
+  weight_decay: 0.0
+
+# -----------------------------------------------------------------------------
+# Augmentation — disabled for baseline 1
+#
+# Only exact lattice operations are even eligible: flips and 90-degree
+# rotations permute pixels without resampling. Any spatial transform is applied
+# identically to all four channels, the target and the validity mask, because
+# augmenting channels independently would destroy the pre/post pixel
+# correspondence the change signal depends on.
+#
+# `radiometric: false` is enforced, not merely defaulted: sigma0 IS the
+# measurement, so scaling it trains on a physically meaningless distribution.
+# -----------------------------------------------------------------------------
+augmentation:
+  enabled: false
+  horizontal_flip: false
+  vertical_flip: false
+  rotate_90: false
+  radiometric: false
+
+# -----------------------------------------------------------------------------
+# Normalisation — FITTED 2026-10-09
+#
+# statistics_path points at a real artifact that now exists. It was fitted by
+#
+#   scripts/fit_statistics.py --config m5_kuro_sar_unet \
+#       --output artifacts/statistics/kuro_sar_fitted
+#
+# over 7,051 eligible official TRAINING samples (7,052 discovered, 1
+# quarantined), 279,310,909 valid pixels, activations 1111004/1111005/1111006,
+# through the exact reprojection and channel pipeline declared above. Fitting
+# before that pipeline existed would have been wrong in a way nothing could
+# detect: bilinear resampling changes the variance of the field it is applied
+# to, so a std fitted pre-resampling does not describe post-resampling input.
+# The artifact's own provenance records the spatial settings, so a mismatch
+# with a future run is detectable.
+#
+# THE ARTIFACT IS NOT COMMITTED. `artifacts/` is git-ignored, because it is
+# derived from a corpus this repository must not redistribute (C11). On a fresh
+# checkout the path will not resolve and the run will REFUSE TO START with the
+# remedy, which is the intended behaviour — far better than silently
+# normalising with something else.
+#
+# required_kind: fitted means development and reference artifacts are both
+# refused here. Reference values in particular are never substituted: their
+# pre/post basis, split basis and aggregation basis are all unstated upstream.
+# -----------------------------------------------------------------------------
+normalisation:
+  enabled: true
+  statistics_path: "artifacts/statistics/kuro_sar_fitted"
+  required_kind: "fitted"
+  allow_development_statistics: false
+
+# -----------------------------------------------------------------------------
+# Checkpointing — C6 selection discipline
+#
+# Highest VALIDATION flood IoU. Never test, never external validation.
+# `directory` is git-ignored.
+# -----------------------------------------------------------------------------
+checkpoint:
+  directory: "runs"
+  monitor: "val_iou_flood_class"
+  mode: "max"
+  selection_split: "validation"
+  save_last: true
+
+training:
+  seed: 20261008
+  deterministic: true
+  epochs: 30
+  # null = automatic: explicit config -> CUDA -> MPS -> CPU.
+  device: null
+  log_every_n_steps: 50
+  max_steps_per_epoch: null

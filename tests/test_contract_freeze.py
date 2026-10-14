@@ -1201,22 +1201,79 @@ class TestBaselineScope:
 
 
 # ---------------------------------------------------------------------------
-# M4 has not been started
+# The freeze encodes decisions, and must not absorb the decisions it defers
 # ---------------------------------------------------------------------------
 
 
-class TestM4IsNotStarted:
-    """The freeze encodes decisions; it must not quietly become M4.
+class TestTheFreezeStaysADecisionRecord:
+    """Guards that a later milestone cannot quietly relax.
 
-    These guards fail if a contract commit starts carrying an implementation.
+    HISTORY. This class was ``TestM4IsNotStarted`` and its first test asserted
+    that ``src/floodmap/segmentation/`` held nothing but ``__init__.py``. That
+    was the correct gate while the contract commit was the only thing on the
+    branch. M4 has since merged (``5ad6430``) and M5 implements the first
+    supervised baseline in exactly that package, so the gate was flipped
+    deliberately rather than deleted: the assertion below now pins the M5
+    surface, and the three guards after it are unchanged.
+
+    What those three still protect is the thing that actually matters, and it
+    is NOT "no code exists". It is that implementing a baseline must not
+    promote that baseline into a project-level decision. M5 therefore puts its
+    hyperparameters in ``configs/experiments/`` and leaves every deferred field
+    in ``configs/segmentation.yaml`` null.
     """
 
-    def test_the_segmentation_package_holds_no_implementation(self):
+    def test_the_segmentation_package_exposes_the_m5_surface(self):
+        """M5 lives here, and its public surface is pinned.
+
+        A module list rather than a mere "is non-empty" check, so that deleting
+        the loss or the metrics module in a refactor fails loudly instead of
+        leaving training importable but unscored.
+        """
         package = REPO_ROOT / "src" / "floodmap" / "segmentation"
-        modules = [path.name for path in package.glob("*.py")]
-        assert modules == ["__init__.py"], f"M4 implementation must not exist yet, found {modules}"
+        modules = sorted(path.name for path in package.glob("*.py"))
+        assert modules == [
+            "__init__.py",
+            "augment.py",
+            "channels.py",
+            "checkpoint.py",
+            "config.py",
+            "dataset.py",
+            "device.py",
+            "losses.py",
+            "metrics.py",
+            "model.py",
+            "normalization.py",
+            "spatial.py",
+            "tensors.py",
+            "train.py",
+        ], f"unexpected M5 segmentation module set: {modules}"
+
+    def test_the_segmentation_package_does_not_reimplement_reprojection(self):
+        """Spatial transformation is shared with M2, not duplicated here.
+
+        ``segmentation/spatial.py`` adapts a CanonicalSample to the shared
+        component's arguments and must not grow its own warp: training and
+        inference resampling differently is the failure this guards, and it
+        would be invisible because both paths would look individually correct.
+        """
+        spatial = (
+            REPO_ROOT / "src" / "floodmap" / "segmentation" / "spatial.py"
+        ).read_text(encoding="utf-8")
+        assert "from floodmap.preprocessing.reprojection import" in spatial
+        for forbidden in ("rasterio.warp", "dst_crs=", "src_transform="):
+            assert forbidden not in spatial, (
+                f"segmentation must not warp directly: found {forbidden!r}"
+            )
 
     def test_no_model_architecture_is_selected(self):
+        """A measured baseline is a candidate, not the project's choice.
+
+        M5 implements a U-Net and names it in an experiment config. That must
+        not leak into the frozen config, where ``architecture: null`` records
+        that no architecture has been SELECTED on measured evidence yet
+        (AGENTS.md §5).
+        """
         model = load_config("segmentation")["model"]
         assert model["architecture"] is None
         assert model["encoder"] is None
@@ -1236,3 +1293,15 @@ class TestM4IsNotStarted:
             assert (
                 forbidden not in source
             ), f"the contract schema must contain no implementation: found {forbidden!r}"
+
+    def test_fitted_statistics_are_still_declared_absent(self):
+        """M5 builds the fitter; it does not fabricate the artifact.
+
+        Flipping ``fitted_statistics_exist`` without an artifact on disk, or
+        pre-filling ``statistics_path`` with where one will eventually live,
+        are the two specific failures C5 exists to prevent.
+        """
+        normalisation = load_config("segmentation")["features"]["normalisation"]
+        assert normalisation["fitted_statistics_exist"] is False
+        assert normalisation["statistics_path"] is None
+        assert normalisation["reference_statistics_usable_as_fitted_parameters"] is False

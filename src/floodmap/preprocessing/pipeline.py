@@ -27,11 +27,10 @@ from .errors import (
 from .grid import (
     AnalysisGrid,
     compare_grids,
-    require_aligned,
     require_rasterio,
-    resampling_from_name,
 )
 from .inputs import ManifestSourceProduct, PreprocessingInputs
+from .reprojection import linear_to_db_after_resampling, reproject_continuous
 from .validation import (
     RasterMetadata,
     read_valid_mask,
@@ -41,10 +40,8 @@ from .validation import (
 
 try:
     import rasterio
-    from rasterio.warp import reproject
 except ImportError as exc:  # pragma: no cover
     rasterio = None  # type: ignore[assignment]
-    reproject = None  # type: ignore[assignment]
     _RASTERIO_ERROR = exc
 else:
     _RASTERIO_ERROR = None
@@ -118,47 +115,45 @@ def _reproject_to_grid(
     *,
     resampling_name: str,
     nodata: float,
+    domain: str = "unitless",
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Warp continuous bands onto the analysis grid.
+
+    Delegates to :func:`floodmap.preprocessing.reprojection.reproject_continuous`
+    so M2 production preprocessing and M5 training use the SAME spatial
+    transformation code. The previous local implementation masked invalid
+    pixels only *after* warping, which cleaned pixels that were themselves
+    invalid but left valid pixels that had absorbed an invalid neighbour
+    through the bilinear kernel.
+    """
     _require_import()
     source_grid = source.as_grid()
-    alignment = compare_grids(source_grid, target)
-    method = resampling_from_name(resampling_name)
-    if alignment.aligned:
+    if compare_grids(source_grid, target).aligned:
+        # Already on the target grid: masking is the whole operation, and
+        # warping would be a no-op that still costs an interpolation pass.
         result = data.copy()
         result[:, ~valid] = nodata
         return (
             result,
             valid.copy(),
-            {"source_to_target": alignment.to_dict(), "reprojected": False},
+            {
+                "source_to_target": compare_grids(source_grid, target).to_dict(),
+                "reprojected": False,
+            },
         )
-    result = np.full((data.shape[0], target.height, target.width), nodata, dtype="float32")
-    for index in range(data.shape[0]):
-        reproject(
-            source=data[index],
-            destination=result[index],
-            src_transform=source.transform,
-            src_crs=source.crs,
-            src_nodata=source.nodata if source.nodata is not None else nodata,
-            dst_transform=target.transform,
-            dst_crs=target.crs,
-            dst_nodata=nodata,
-            resampling=method,
-        )
-    target_valid = np.zeros((target.height, target.width), dtype="uint8")
-    reproject(
-        source=valid.astype("uint8"),
-        destination=target_valid,
-        src_transform=source.transform,
-        src_crs=source.crs,
-        src_nodata=0,
-        dst_transform=target.transform,
-        dst_crs=target.crs,
-        dst_nodata=0,
-        resampling=resampling_from_name("nearest", field="valid-mask resampling"),
+    outcome = reproject_continuous(
+        data,
+        valid,
+        source=source_grid,
+        target=target,
+        resampling_name=resampling_name,
+        nodata=nodata,
+        domain=domain,
     )
-    target_valid = target_valid.astype(bool)
-    result[:, ~target_valid] = nodata
-    return result, target_valid, {"source_to_target": alignment.to_dict(), "reprojected": True}
+    provenance = dict(outcome.provenance)
+    # Preserved key name so existing artifact consumers keep working.
+    provenance["source_to_target"] = provenance.pop("source_to_target_alignment")
+    return outcome.data, outcome.valid, provenance
 
 
 def _require_pair_geometry(
@@ -257,16 +252,26 @@ def preprocess_sentinel1_pair(
         metadata = require_valid_raster(source.path, required_bands=settings.required_polarizations)
         indexes = _band_indexes(metadata, settings.required_polarizations)
         metadata, data, valid = _read_bands(source, indexes)
-        if settings.radiometric_calibration == "linear_to_db":
+        nodata = settings.output_nodata if settings.output_nodata is not None else -9999.0
+        convert_to_db = settings.radiometric_calibration == "linear_to_db"
+        if convert_to_db:
             _require_true(
                 _source_metadata(source, source_metadata), "linear_backscatter", source.scene_id
             )
+            # Only the domain is checked here. The conversion itself happens
+            # AFTER reprojection: see below.
             positive = data > 0
             valid &= positive.all(axis=0)
-            data = np.where(
-                positive, 10.0 * np.log10(np.maximum(data, np.finfo("float32").tiny)), 0.0
-            )
-        nodata = settings.output_nodata if settings.output_nodata is not None else -9999.0
+
+        # C3 ORDERING, corrected 2026-10-09. SAR is resampled in LINEAR POWER
+        # and converted to decibels afterwards. The previous order converted
+        # first, so bilinear resampling averaged logarithms -- which is not the
+        # mean of the underlying power and is biased low. The frozen contract
+        # has always required this order
+        # (configs/preprocessing.yaml -> target_grid.resampling:
+        # sar_domain: linear_power, sar_resample_before_db_conversion: true,
+        # pinned by tests/test_contract_freeze.py), so the implementation was
+        # contradicting its own declared policy.
         data, valid, alignment = _reproject_to_grid(
             data,
             valid,
@@ -274,16 +279,35 @@ def preprocess_sentinel1_pair(
             grid,
             resampling_name=settings.resampling,
             nodata=nodata,
+            domain="linear_power" if convert_to_db else "unitless",
         )
+
+        if convert_to_db:
+            converted = np.empty_like(data)
+            db_valid = valid.copy()
+            for index in range(data.shape[0]):
+                band, band_valid = linear_to_db_after_resampling(data[index], valid)
+                converted[index] = band
+                db_valid &= band_valid
+            data = np.where(db_valid, converted, nodata).astype("float32", copy=False)
+            valid = db_valid
+
         operations = [
             "validate_selected_m1_source",
             f"validate_polarizations:{','.join(settings.required_polarizations)}",
-            f"radiometric_calibration:{settings.radiometric_calibration}",
             f"terrain_correction:{settings.terrain_correction}",
             f"resampling:{settings.resampling}",
             "mask_invalid_pixels",
             "prepare_common_analysis_grid",
         ]
+        # Ordering is recorded in the artifact, not just in a comment, so a
+        # consumer can verify which domain the resampling happened in.
+        if convert_to_db:
+            operations.insert(2, "resample_in_linear_power")
+            operations.insert(3, f"radiometric_calibration:{settings.radiometric_calibration}")
+            operations.insert(4, "linear_to_db_after_resampling")
+        else:
+            operations.insert(2, f"radiometric_calibration:{settings.radiometric_calibration}")
         artifacts.append(
             write_raster_artifact(
                 data=data,
@@ -407,6 +431,7 @@ def preprocess_sentinel2_pair(
             grid,
             resampling_name=settings.resampling,
             nodata=nodata,
+            domain="reflectance",
         )
         operations.extend(
             [
@@ -478,6 +503,7 @@ def preprocess_dem(
         grid,
         resampling_name=config.dem.resampling,
         nodata=nodata,
+        domain="elevation",
     )
     quality = {
         "sensor": "copernicus-dem",

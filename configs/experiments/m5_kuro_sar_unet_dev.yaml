@@ -1,0 +1,128 @@
+# =============================================================================
+# configs/experiments/m5_kuro_sar_unet_dev.yaml
+#
+# PIPELINE VERIFICATION ONLY. NOT A SCIENTIFIC EXPERIMENT.
+#
+# This config exists so the smoke and overfit tests can drive the real code
+# path — adapter, tensors, model, loss, backward, optimizer step, validation,
+# checkpoint — on a handful of real tiles, before any fitted statistics exist.
+#
+# Every number here is chosen to make the run SMALL AND FAST, not to make the
+# model good:
+#   - 4 training tiles and 4 validation tiles;
+#   - base_channels 8 and depth 2, which is a ~0.1M parameter toy;
+#   - 1 epoch by default, overridden by the overfit test.
+#
+# `normalisation.required_kind: development` makes the run use an IDENTITY
+# transform carrying `development_only: true` and
+# `usable_for_reported_results: false`. Any metric produced by this config is
+# evidence that the pipeline executes, and is NOT a performance measurement.
+# A development artifact is rejected anywhere fitted statistics are required.
+#
+# The real baseline is configs/experiments/m5_kuro_sar_unet.yaml.
+# =============================================================================
+
+name: "m5_kuro_sar_unet_dev"
+version: "1.0.0"
+status: "development_only"
+description: >-
+  Tiny pipeline-correctness configuration for the M5 smoke and overfit tests.
+  Uses a handful of real Kuro Siwo tiles and development-only identity
+  normalisation. Produces no reportable result.
+
+primary_metric: "iou_flood_class"
+
+dataset:
+  id: "kuro_siwo"
+  root_env: "FLOODMAP_KURO_SIWO_ROOT"
+  root: null
+  train_split: "train"
+  validation_split: "validation"
+  channels:
+    - "pre_vv"
+    - "pre_vh"
+    - "post_vv"
+    - "post_vh"
+  representation: "linear_sigma0"
+  ignore_index: 3
+  # Applied AFTER deterministic sorting, so the same tiles are taken every run.
+  limit_train: 4
+  limit_validation: 4
+
+# Reprojection is exercised by its own dedicated tests rather than by every
+# smoke run: warping six planes per sample is the dominant cost in a tiny run,
+# and the smoke test's job is to prove the train loop executes. The real
+# baseline config enables it.
+reprojection:
+  enabled: false
+  resolution_m: 10.0
+  tile_size: 224
+  sar_resampling: "bilinear"
+  label_resampling: "nearest"
+  nodata_mode: "strict"
+
+# Same eligibility policy as the real baseline, so the development run cannot
+# accidentally train on a sample the baseline excludes.
+quarantine:
+  enabled: true
+  path: null
+  require_policy_file: true
+
+dataloader:
+  batch_size: 2
+  # 0 workers: the test suite must not fork worker processes.
+  num_workers: 0
+  shuffle_train: true
+  drop_last: false
+  pin_memory: false
+  persistent_workers: false
+  prefetch_factor: null
+
+model:
+  architecture: "unet"
+  in_channels: 4
+  num_classes: 3
+  # Deliberately tiny. 224x224 tiles stay divisible by 2**2.
+  base_channels: 8
+  depth: 2
+  pretrained_weights: null
+
+loss:
+  name: "cross_entropy"
+  ignore_index: 3
+  class_weights: null
+
+optimizer:
+  name: "adam"
+  learning_rate: 0.005
+  weight_decay: 0.0
+
+augmentation:
+  enabled: false
+  horizontal_flip: false
+  vertical_flip: false
+  rotate_90: false
+  radiometric: false
+
+# Development identity normalisation. Explicitly outside the frozen contract.
+normalisation:
+  enabled: true
+  statistics_path: null
+  required_kind: "development"
+  allow_development_statistics: true
+
+checkpoint:
+  directory: "runs"
+  monitor: "val_iou_flood_class"
+  mode: "max"
+  selection_split: "validation"
+  save_last: true
+
+training:
+  seed: 12345
+  deterministic: true
+  epochs: 1
+  # CPU so the test is identical on every machine and needs no accelerator.
+  device: "cpu"
+  log_every_n_steps: 1
+  max_steps_per_epoch: null

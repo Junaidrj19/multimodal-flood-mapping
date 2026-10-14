@@ -398,3 +398,227 @@ def test_wrong_dem_source_is_rejected(tmp_path):
             source_metadata={"product_name": "arbitrary-dem", "version": "x", "product_id": "x"},
             grid=_grid(),
         )
+
+
+# ---------------------------------------------------------------------------
+# C3 ordering regression: SAR resamples in LINEAR POWER, converts to dB after
+# ---------------------------------------------------------------------------
+
+
+def _coarser_grid() -> AnalysisGrid:
+    """A 2x coarser grid, so resampling genuinely has to average."""
+    return AnalysisGrid(
+        crs="EPSG:4326",
+        transform=from_origin(0.0, 4.0, 2.0, 2.0),
+        width=2,
+        height=2,
+        resolution_m=2.0,
+    )
+
+
+def test_sentinel1_resamples_in_linear_power_before_db_conversion(tmp_path):
+    """REGRESSION. The pipeline converted to dB and then resampled.
+
+    That made bilinear/average resampling average LOGARITHMS, which is not the
+    mean of the underlying power and is biased low -- precisely what
+    ``configs/preprocessing.yaml -> target_grid.resampling.sar_domain:
+    linear_power`` and ``sar_resample_before_db_conversion: true`` forbid, and
+    what ``test_contract_freeze`` already pinned at the config level. The
+    implementation contradicted its own declared policy.
+
+    Construction: a 4x4 source of alternating 0.01 and 1.0 linear values is
+    averaged down to 2x2. Each output pixel draws on two 0.01 and two 1.0
+    samples, so the correct linear mean is 0.505 -> -2.967 dB. Averaging in
+    decibels would give (-20 + -20 + 0 + 0)/4 = -10 dB. The two answers differ
+    by 7 dB, far outside any interpolation tolerance.
+    """
+    before = _s1("s1-before", datetime(2024, 1, 9, 12, tzinfo=timezone.utc))
+    after = _s1("s1-after", datetime(2024, 1, 11, 12, tzinfo=timezone.utc))
+    manifest = _manifest(SensorKind.SENTINEL1, before, after)
+
+    band = np.array(
+        [
+            [0.01, 1.0, 0.01, 1.0],
+            [1.0, 0.01, 1.0, 0.01],
+            [0.01, 1.0, 0.01, 1.0],
+            [1.0, 0.01, 1.0, 0.01],
+        ],
+        dtype="float32",
+    )
+    paths = {}
+    for scene in (before, after):
+        path = tmp_path / f"{scene.scene_id}.tif"
+        _write_raster(path, [band, band], ("VV", "VH"))
+        paths[scene.scene_id] = path
+
+    metadata = {
+        scene.scene_id: {
+            "linear_backscatter": True,
+            "terrain_corrected": True,
+            "pair_geometry_verified": True,
+        }
+        for scene in (before, after)
+    }
+    config = _config(
+        sentinel1={
+            "required_polarizations": ["VV", "VH"],
+            "radiometric_calibration": "linear_to_db",
+            "terrain_correction": "source_terrain_corrected",
+            "resampling": "average",
+            "output_nodata": -9999.0,
+        }
+    )
+
+    artifacts = preprocess_sentinel1_pair(
+        manifest,
+        paths,
+        tmp_path / "processed",
+        config=config,
+        grid=_coarser_grid(),
+        source_metadata=metadata,
+    )
+
+    with rasterio.open(artifacts[0].artifact_path) as dataset:
+        values = dataset.read(1)
+
+    linear_mean = (0.01 + 0.01 + 1.0 + 1.0) / 4.0
+    correct_db = 10.0 * np.log10(linear_mean)
+    wrong_db = (10.0 * np.log10(0.01) * 2 + 10.0 * np.log10(1.0) * 2) / 4.0
+
+    assert correct_db == pytest.approx(-2.9676, abs=1e-3)
+    assert wrong_db == pytest.approx(-10.0, abs=1e-6)
+
+    observed = values[values != -9999.0]
+    assert observed.size > 0
+    np.testing.assert_allclose(observed, correct_db, atol=0.05)
+    # The defect would have produced -10 dB here.
+    assert not np.any(np.isclose(observed, wrong_db, atol=0.05))
+
+
+def test_sentinel1_artifact_records_the_resampling_domain_ordering(tmp_path):
+    """Ordering is auditable from the artifact, not only from source comments."""
+    before = _s1("s1-before", datetime(2024, 1, 9, 12, tzinfo=timezone.utc))
+    after = _s1("s1-after", datetime(2024, 1, 11, 12, tzinfo=timezone.utc))
+    manifest = _manifest(SensorKind.SENTINEL1, before, after)
+    band = np.full((4, 4), 0.1, dtype="float32")
+    paths = {}
+    for scene in (before, after):
+        path = tmp_path / f"{scene.scene_id}.tif"
+        _write_raster(path, [band, band], ("VV", "VH"))
+        paths[scene.scene_id] = path
+    metadata = {
+        scene.scene_id: {
+            "linear_backscatter": True,
+            "terrain_corrected": True,
+            "pair_geometry_verified": True,
+        }
+        for scene in (before, after)
+    }
+    config = _config(
+        sentinel1={
+            "required_polarizations": ["VV", "VH"],
+            "radiometric_calibration": "linear_to_db",
+            "terrain_correction": "source_terrain_corrected",
+            "resampling": "bilinear",
+            "output_nodata": -9999.0,
+        }
+    )
+    artifacts = preprocess_sentinel1_pair(
+        manifest,
+        paths,
+        tmp_path / "processed",
+        config=config,
+        grid=_coarser_grid(),
+        source_metadata=metadata,
+    )
+    operations = artifacts[0].provenance.preprocessing_operations
+    assert "resample_in_linear_power" in operations
+    assert "linear_to_db_after_resampling" in operations
+    assert operations.index("resample_in_linear_power") < operations.index(
+        "linear_to_db_after_resampling"
+    )
+
+
+def test_source_calibrated_sentinel1_is_not_converted_to_db(tmp_path):
+    """The non-dB path must stay untouched by the ordering fix."""
+    before = _s1("s1-before", datetime(2024, 1, 9, 12, tzinfo=timezone.utc))
+    after = _s1("s1-after", datetime(2024, 1, 11, 12, tzinfo=timezone.utc))
+    manifest = _manifest(SensorKind.SENTINEL1, before, after)
+    band = np.full((4, 4), -12.0, dtype="float32")
+    paths = {}
+    for scene in (before, after):
+        path = tmp_path / f"{scene.scene_id}.tif"
+        _write_raster(path, [band, band], ("VV", "VH"))
+        paths[scene.scene_id] = path
+    metadata = {
+        scene.scene_id: {
+            "radiometric_calibrated": True,
+            "terrain_corrected": True,
+            "pair_geometry_verified": True,
+        }
+        for scene in (before, after)
+    }
+    artifacts = preprocess_sentinel1_pair(
+        manifest,
+        paths,
+        tmp_path / "processed",
+        config=_config(),
+        grid=_grid(),
+        source_metadata=metadata,
+    )
+    operations = artifacts[0].provenance.preprocessing_operations
+    assert "linear_to_db_after_resampling" not in operations
+    with rasterio.open(artifacts[0].artifact_path) as dataset:
+        np.testing.assert_allclose(dataset.read(1), -12.0, rtol=1e-6)
+
+
+def test_invalid_pixels_do_not_contaminate_resampled_m2_output(tmp_path):
+    """M2 inherits the shared nodata guarantee, not just M5.
+
+    Previously the local implementation masked the output after warping, which
+    left valid pixels that had already absorbed an invalid neighbour.
+    """
+    before = _s1("s1-before", datetime(2024, 1, 9, 12, tzinfo=timezone.utc))
+    after = _s1("s1-after", datetime(2024, 1, 11, 12, tzinfo=timezone.utc))
+    manifest = _manifest(SensorKind.SENTINEL1, before, after)
+
+    band = np.full((4, 4), 0.2, dtype="float32")
+    band[:, 2:] = -9999.0  # declared nodata in the source raster
+    paths = {}
+    for scene in (before, after):
+        path = tmp_path / f"{scene.scene_id}.tif"
+        _write_raster(path, [band, band], ("VV", "VH"), nodata=-9999.0)
+        paths[scene.scene_id] = path
+
+    metadata = {
+        scene.scene_id: {
+            "radiometric_calibrated": True,
+            "terrain_corrected": True,
+            "pair_geometry_verified": True,
+        }
+        for scene in (before, after)
+    }
+    config = _config(
+        sentinel1={
+            "required_polarizations": ["VV", "VH"],
+            "radiometric_calibration": "source_calibrated",
+            "terrain_correction": "source_terrain_corrected",
+            "resampling": "bilinear",
+            "output_nodata": -9999.0,
+        }
+    )
+    artifacts = preprocess_sentinel1_pair(
+        manifest,
+        paths,
+        tmp_path / "processed",
+        config=config,
+        grid=_coarser_grid(),
+        source_metadata=metadata,
+    )
+    with rasterio.open(artifacts[0].artifact_path) as dataset:
+        values = dataset.read(1)
+    observed = values[values != -9999.0]
+    # Every surviving pixel is the untainted source value; nothing sits
+    # between the sentinel and 0.2.
+    if observed.size:
+        np.testing.assert_allclose(observed, 0.2, rtol=1e-5)
