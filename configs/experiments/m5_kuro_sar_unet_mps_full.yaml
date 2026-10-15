@@ -1,0 +1,100 @@
+name: m5_kuro_sar_unet_mps_full
+version: 1.0.0
+status: ready_to_run
+description: >-
+  Full-dataset MPS training run. Identical dataset contract, quarantine policy,
+  fitted statistics, model, loss, metrics and canonical reprojection to
+  m5_kuro_sar_unet_mps_probe2; the only differences are that the training subset
+  is removed and the run is longer. Trains on the ENTIRE eligible training split
+  of 7,051 tiles (7,052 discovered, minus 1 excluded by the quarantine policy)
+  for 10 epochs, and validates on all 19 eligible validation samples.
+primary_metric: iou_flood_class
+dataset:
+  id: kuro_siwo
+  root_env: FLOODMAP_KURO_SIWO_ROOT
+  root: null
+  train_split: train
+  validation_split: validation
+  channels:
+  - pre_vv
+  - pre_vh
+  - post_vv
+  - post_vh
+  representation: linear_sigma0
+  ignore_index: 3
+  # null: the whole eligible training split, no development truncation. The
+  # quarantine policy still applies, so this resolves to 7,051 of 7,052 tiles.
+  limit_train: null
+  # null, not 19: the cap is a development truncation, and hard-coding the
+  # current eligible count would silently become a truncation if the corpus
+  # changed. All eligible validation samples are used.
+  limit_validation: null
+  # null, not a selection: this run is the full split, so there is no manifest to
+  # name. limit_train must stay null alongside it.
+  train_sample_manifest: null
+reprojection:
+  enabled: true
+  resolution_m: 10.0
+  tile_size: 224
+  sar_resampling: bilinear
+  label_resampling: nearest
+  nodata_mode: strict
+quarantine:
+  enabled: true
+  path: null
+  require_policy_file: true
+dataloader:
+  # batch_size/num_workers/persistent_workers/prefetch_factor live here, not under
+  # `training`: both sections are extra="forbid", so these keys only validate on
+  # DataLoaderSection. num_workers 0 is required on this machine after the earlier
+  # SIGBUS; persistent_workers and prefetch_factor are inert at 0 workers but are
+  # stated explicitly so the record is unambiguous.
+  batch_size: 1
+  num_workers: 0
+  shuffle_train: true
+  drop_last: false
+  pin_memory: false
+  persistent_workers: false
+  prefetch_factor: null
+model:
+  architecture: unet
+  in_channels: 4
+  num_classes: 3
+  base_channels: 32
+  depth: 4
+  pretrained_weights: null
+loss:
+  name: cross_entropy
+  ignore_index: 3
+  class_weights: null
+optimizer:
+  name: adam
+  learning_rate: 0.001
+  weight_decay: 0.0
+augmentation:
+  enabled: false
+  horizontal_flip: false
+  vertical_flip: false
+  rotate_90: false
+  radiometric: false
+normalisation:
+  enabled: true
+  statistics_path: artifacts/statistics/kuro_sar_fitted
+  required_kind: fitted
+  allow_development_statistics: false
+checkpoint:
+  # Base directory only. run_training appends the experiment name to this, so the
+  # run is launched with `--run-dir runs/m5_mps_full` to land artifacts exactly
+  # there — the same pattern the bounded MPS runs and probe2 used.
+  directory: runs
+  monitor: val_iou_flood_class
+  mode: max
+  selection_split: validation
+  save_last: true
+training:
+  seed: 20261008
+  deterministic: true
+  epochs: 10
+  device: mps
+  log_every_n_steps: 50
+  max_steps_per_epoch: null

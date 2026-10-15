@@ -186,7 +186,13 @@ class KuroSiwoSarDataset(Dataset):
         )
 
         if self._mean is not None and self._std is not None:
-            tensors["image"] = (tensors["image"] - self._mean) / self._std
+            # Reprojection uses SAR_NODATA for pixels outside the shared valid
+            # footprint. Replace those pixels with the per-channel mean before
+            # applying the fitted statistics, so they become exactly 0.0 in
+            # normalised space rather than an extreme sentinel-derived value.
+            valid = tensors["valid_mask"].unsqueeze(0)
+            image = torch.where(valid, tensors["image"], self._mean)
+            tensors["image"] = (image - self._mean) / self._std
 
         if self.augmentation is not None:
             tensors = self.augmentation(tensors)

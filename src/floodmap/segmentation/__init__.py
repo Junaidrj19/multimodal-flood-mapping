@@ -56,13 +56,28 @@ from .normalization import (
     development_statistics,
     fit_training_statistics,
 )
+from .selection import (
+    SampleManifest,
+    SampleSelection,
+    SampleSelectionError,
+    allocate_largest_remainder,
+    read_manifest,
+    select_training_samples,
+    write_manifest,
+)
 from .tensors import TensorSample, sample_to_tensors, stack_channels
 from .spatial import (
     ReprojectedSample,
     reproject_canonical_sample,
     source_grid_for_sample,
 )
-from .train import TrainingResult, evaluate, run_training, train_one_epoch
+from .train import (
+    TrainingResult,
+    evaluate,
+    resolve_train_sample_manifest,
+    run_training,
+    train_one_epoch,
+)
 
 __all__ = [
     "CHANNEL_ORDER",
@@ -80,12 +95,16 @@ __all__ = [
     "ReprojectedSample",
     "ReprojectionSection",
     "SEMANTIC_VALUES",
+    "SampleManifest",
+    "SampleSelection",
+    "SampleSelectionError",
     "SegmentationMetrics",
     "StatisticsArtifact",
     "StatisticsError",
     "TensorSample",
     "TrainingResult",
     "UNet",
+    "allocate_largest_remainder",
     "build_loss",
     "collate_samples",
     "development_statistics",
@@ -93,13 +112,17 @@ __all__ = [
     "fit_training_statistics",
     "load_checkpoint",
     "load_experiment",
+    "read_manifest",
     "reproject_canonical_sample",
+    "resolve_train_sample_manifest",
     "run_training",
     "sample_to_tensors",
     "save_checkpoint",
     "seed_everything",
     "select_device",
+    "select_training_samples",
     "source_grid_for_sample",
     "stack_channels",
     "train_one_epoch",
+    "write_manifest",
 ]

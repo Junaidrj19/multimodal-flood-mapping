@@ -1229,6 +1229,13 @@ class TestTheFreezeStaysADecisionRecord:
         A module list rather than a mere "is non-empty" check, so that deleting
         the loss or the metrics module in a refactor fails loudly instead of
         leaving training importable but unscored.
+
+        ``selection.py`` was added for the bounded MPS probes: it chooses WHICH
+        training samples a bounded run uses, deterministically and
+        proportionally across activations, and records that choice as an
+        auditable manifest. It is listed here rather than silently tolerated,
+        because adding a module to this package is the kind of decision this
+        inventory exists to make visible.
         """
         package = REPO_ROOT / "src" / "floodmap" / "segmentation"
         modules = sorted(path.name for path in package.glob("*.py"))
@@ -1244,6 +1251,7 @@ class TestTheFreezeStaysADecisionRecord:
             "metrics.py",
             "model.py",
             "normalization.py",
+            "selection.py",
             "spatial.py",
             "tensors.py",
             "train.py",

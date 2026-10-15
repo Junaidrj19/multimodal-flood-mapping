@@ -354,14 +354,36 @@ class TestDatasetLayer:
         stats = StatisticsArtifact(
             kind="development",
             values={
-                name: type(development_statistics().values[name])(mean=0.1, std=0.05)
-                for name in CHANNEL_ORDER
+                name: type(development_statistics().values[name])(
+                    mean=mean, std=std
+                )
+                for name, mean, std in zip(
+                    CHANNEL_ORDER,
+                    (0.01, 0.02, 0.03, 0.04),
+                    (0.01, 0.02, 0.015, 0.01),
+                )
             },
             provenance=development_statistics().provenance,
         )
-        plain = KuroSiwoSarDataset(adapter, "train")[0]["image"]
-        scaled = KuroSiwoSarDataset(adapter, "train", statistics=stats)[0]["image"]
-        torch.testing.assert_close(scaled, (plain - 0.1) / 0.05)
+        plain = KuroSiwoSarDataset(adapter, "train")[0]
+        scaled = KuroSiwoSarDataset(adapter, "train", statistics=stats)[0]
+
+        valid = scaled["valid_mask"]
+        assert bool(valid.any()) and bool((~valid).any()), "fixture must mix valid and invalid pixels"
+        means = torch.tensor([0.01, 0.02, 0.03, 0.04], dtype=torch.float32).view(4, 1, 1)
+        stds = torch.tensor([0.01, 0.02, 0.015, 0.01], dtype=torch.float32).view(4, 1, 1)
+        expected = (plain["image"] - means) / stds
+
+        # Every channel keeps its existing normalised value on valid pixels.
+        torch.testing.assert_close(scaled["image"][:, valid], expected[:, valid])
+        # Invalid pixels represent the channel mean in normalised space, not a
+        # finite-but-extreme value inherited from an input sentinel.
+        assert torch.isfinite(scaled["image"]).all()
+        torch.testing.assert_close(
+            scaled["image"][:, ~valid], torch.zeros_like(scaled["image"][:, ~valid])
+        )
+        torch.testing.assert_close(scaled["target"], plain["target"])
+        torch.testing.assert_close(scaled["valid_mask"], plain["valid_mask"])
 
     def test_collate_preserves_sample_ids(self, adapter):
         dataset = KuroSiwoSarDataset(adapter, "train")
@@ -1366,6 +1388,50 @@ class TestCanonicalGridReprojection:
         assert not np.any(on_valid == SAR_NODATA)
         assert bool(np.isfinite(on_valid).all())
         assert np.all(out.image[:, ~out.valid_mask] == SAR_NODATA)
+
+    def test_normalisation_masks_reprojected_sar_nodata(self, adapter):
+        """Invalid reprojection output becomes zero in normalised space."""
+        from floodmap.segmentation import reproject_canonical_sample
+        from floodmap.segmentation.spatial import SAR_NODATA
+
+        settings = self._settings(tile_size=32)
+        base = development_statistics()
+        means = (0.01, 0.02, 0.03, 0.04)
+        stds = (0.01, 0.02, 0.015, 0.01)
+        stats = StatisticsArtifact(
+            kind="development",
+            values={
+                name: type(base.values[name])(mean=mean, std=std)
+                for name, mean, std in zip(CHANNEL_ORDER, means, stds)
+            },
+            provenance=base.provenance,
+        )
+
+        dataset = KuroSiwoSarDataset(
+            adapter, "train", statistics=stats, reprojection=settings
+        )
+        raw = reproject_canonical_sample(dataset.load_canonical(0), tile_size=32)
+        item = dataset[0]
+        valid = item["valid_mask"]
+        assert bool(valid.any()) and bool((~valid).any()), "fixture must mix valid and invalid pixels"
+        assert np.all(raw.image[:, ~raw.valid_mask] == SAR_NODATA)
+
+        mean_tensor = torch.tensor(means, dtype=torch.float32).view(4, 1, 1)
+        std_tensor = torch.tensor(stds, dtype=torch.float32).view(4, 1, 1)
+        expected = (torch.from_numpy(raw.image) - mean_tensor) / std_tensor
+
+        # The fitted-statistics transform is unchanged for every valid channel.
+        torch.testing.assert_close(item["image"][:, valid], expected[:, valid])
+        # The -9999 reprojection sentinel cannot reach the model input.
+        assert torch.isfinite(item["image"]).all()
+        torch.testing.assert_close(
+            item["image"][:, ~valid], torch.zeros_like(item["image"][:, ~valid])
+        )
+        # Normalisation does not alter the shared mask or label ignore semantics.
+        torch.testing.assert_close(
+            valid, torch.from_numpy(np.ascontiguousarray(raw.valid_mask))
+        )
+        assert torch.all(item["target"][~valid] == IGNORE_INDEX)
 
     def test_one_mask_governs_all_four_channels_and_the_target(self, canonical_sample):
         from floodmap.segmentation import reproject_canonical_sample

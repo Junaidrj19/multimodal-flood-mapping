@@ -57,6 +57,15 @@ class DatasetSection(_Strict):
     #: Development caps. ``None`` means "use the whole split".
     limit_train: Optional[int] = None
     limit_validation: Optional[int] = None
+    #: Optional path to a deterministic training-sample manifest produced by
+    #: ``scripts/select_samples.py``.
+    #:
+    #: ``None`` — the default — keeps every existing config behaving exactly as
+    #: it did: the whole split, optionally capped by ``limit_train``. When set,
+    #: the named manifest's sample IDs become the training allowlist, which is
+    #: how a bounded run gets a subset spread across activations rather than a
+    #: sorted prefix drawn from the lowest-numbered one.
+    train_sample_manifest: Optional[str] = None
 
     @model_validator(mode="after")
     def _channels_and_representation_match_the_freeze(self) -> "DatasetSection":
@@ -73,6 +82,13 @@ class DatasetSection(_Strict):
         if self.validation_split == "test" or self.train_split == "test":
             raise ValueError(
                 "the test split must not be used for training or selection"
+            )
+        if self.train_sample_manifest is not None and self.limit_train is not None:
+            raise ValueError(
+                "dataset.train_sample_manifest and dataset.limit_train are mutually "
+                "exclusive: limit_train truncates the manifest's deliberately "
+                "activation-balanced selection back to a sorted prefix, so the run "
+                "would not train on the selection its config names. Set exactly one"
             )
         return self
 

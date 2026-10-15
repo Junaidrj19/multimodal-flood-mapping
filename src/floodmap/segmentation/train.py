@@ -45,8 +45,16 @@ from .losses import build_loss
 from .metrics import MetricResult, SegmentationMetrics
 from .model import UNet
 from .normalization import StatisticsArtifact, development_statistics
+from .selection import SampleManifest, read_manifest
 
-__all__ = ["TrainingResult", "build_optimizer", "evaluate", "run_training", "train_one_epoch"]
+__all__ = [
+    "TrainingResult",
+    "build_optimizer",
+    "evaluate",
+    "resolve_train_sample_manifest",
+    "run_training",
+    "train_one_epoch",
+]
 
 LOGGER = logging.getLogger("floodmap.segmentation.train")
 
@@ -131,6 +139,32 @@ def resolve_quarantine(config: ExperimentConfig):
         config.dataset.id,
         path=Path(section.path) if section.path else None,
         required=section.require_policy_file,
+    )
+
+
+def resolve_train_sample_manifest(config: ExperimentConfig) -> Optional[SampleManifest]:
+    """Load the training-sample selection the config names, if any.
+
+    Returns ``None`` when no manifest is configured, which leaves the existing
+    whole-split (optionally ``limit_train``-capped) behaviour exactly as it was.
+
+    The manifest is validated against this config's own dataset id and training
+    split, so a selection generated for another corpus or another split is
+    refused rather than quietly applied.
+    """
+
+    declared = config.dataset.train_sample_manifest
+    if not declared:
+        return None
+    # Resolved against the project root, not the process CWD, so a run behaves
+    # the same from a script, a test and a notebook.
+    candidate = Path(declared)
+    if not candidate.is_absolute():
+        candidate = project_root() / candidate
+    return read_manifest(
+        candidate,
+        dataset_id=config.dataset.id,
+        split=config.dataset.train_split,
     )
 
 
@@ -278,12 +312,23 @@ def run_training(
     # warped by identical spatial parameters.
     reprojection = config.reprojection if config.reprojection.enabled else None
     quarantine = resolve_quarantine(config)
+    train_manifest = resolve_train_sample_manifest(config)
+    if train_manifest is not None:
+        LOGGER.info(
+            "training on the %d-sample selection in %s (seed %s)",
+            len(train_manifest.sample_ids),
+            train_manifest.path,
+            train_manifest.provenance.get("seed"),
+        )
 
     train_dataset = KuroSiwoSarDataset(
         adapter,
         config.dataset.train_split,
         statistics=statistics,
         augmentation=augmentation,
+        sample_ids=(
+            list(train_manifest.sample_ids) if train_manifest is not None else None
+        ),
         limit=config.dataset.limit_train,
         ignore_index=config.dataset.ignore_index,
         reprojection=reprojection,
@@ -305,6 +350,15 @@ def run_training(
         raise RuntimeError(
             f"the {config.dataset.train_split!r} split resolved to 0 samples; check the "
             "external dataset root and the official activation split"
+        )
+    if train_manifest is not None and len(train_dataset) != len(train_manifest.sample_ids):
+        # The dataset already raises on an unknown or quarantined ID, so this is
+        # a post-condition rather than a filter. It exists because training on
+        # fewer tiles than the manifest names is a plausible silent wrong answer.
+        raise RuntimeError(
+            f"the training selection names {len(train_manifest.sample_ids)} sample(s) "
+            f"but the dataset resolved {len(train_dataset)}; the manifest and the corpus "
+            "disagree and the run must not proceed on a partial selection"
         )
 
     loader_generator = torch.Generator()
@@ -459,6 +513,18 @@ def run_training(
                 {"applied": False, "reason": "disabled in experiment configuration"}
                 if quarantine is None
                 else quarantine.to_dict()
+            ),
+            # Always present, even when no manifest was used: an absent key is
+            # indistinguishable from a selection that was applied and not recorded.
+            "train_sample_selection": (
+                {
+                    "applied": False,
+                    "reason": "no dataset.train_sample_manifest configured; the whole "
+                    "training split was used, subject to dataset.limit_train",
+                    "limit_train": config.dataset.limit_train,
+                }
+                if train_manifest is None
+                else train_manifest.identity()
             ),
             "train_dataset": train_dataset.identity(),
             "validation_dataset": val_dataset.identity(),
