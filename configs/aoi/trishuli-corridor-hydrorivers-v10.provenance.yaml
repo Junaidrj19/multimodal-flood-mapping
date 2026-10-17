@@ -1,0 +1,203 @@
+artifact_type: study_area_definition
+aoi_id: trishuli-corridor-hydrorivers-v10-941a4079
+name: Upper Trishuli / Bhote Koshi corridor
+created_utc: '2026-10-17T05:33:22+00:00'
+generator: scripts/build_corridor_aoi.py
+code_version: a1a7a04deced-dirty
+conventions:
+  crs_delivery: EPSG:4326
+  crs_construction: EPSG:32645
+  area_units: km^2
+  linear_units: m
+source:
+  product: HydroRIVERS
+  version: '1.0'
+  tile: HydroRIVERS_v10_as
+  grid: 15 arc-second (~460 m at 28 deg N)
+  provider: HydroSHEDS (World Wildlife Fund US)
+  product_page: https://www.hydrosheds.org/products/hydrorivers
+  licence: 'HydroSHEDS License Agreement (the HydroRIVERS documentation §4.1 states that HydroRIVERS is
+    covered by the same agreement): free for commercial and non-commercial use; use of the data constitutes
+    acceptance of the terms. Attribution and citation are requested in §4.2 and are recorded in the provenance
+    file.'
+  citation: 'Lehner, B., Grill G. (2013): Global river hydrography and network routing: baseline data
+    and new approaches to study the world''s large river systems. Hydrological Processes, 27(15): 2171-2186.
+    Data is available at www.hydrosheds.org.'
+  delivery_crs: EPSG:4326
+  layer: HydroRIVERS_v10_as
+  retrieval_date: '2026-10-17'
+  local_path: data/raw/hydrorivers/HydroRIVERS_v10_as.gdb
+  local_sha256: 9b88c07a74404eadd42a27e1304080511bab6f533423e0d42b0f6d08912a4e60
+  local_part_count: 44
+  local_bytes: 256073631
+geography:
+  reference:
+    name: Rasuwagadhi (Rasuwa Fort) border crossing
+    lon: 85.37778
+    lat: 28.27778
+    source: 'Wikipedia, "Rasuwa Fort" (accessed 2026-10-17): coordinates 28°16′40″N 85°22′40″E, site described
+      as beside the Gyirong-Rasuwagadhi border crossing and the Miteri Bridge.'
+    uncertainty_m: 150
+    note: The fort, the bridge and the border post are distinct points within a few hundred metres; the
+      reference is the published site coordinate, and the corridor is cut where the mapped stem is closest
+      to it.
+  reach_selection:
+    selection_rule: main-stem downstream path from the documented reference; terminus is the furthest
+      downstream reach whose fully buffered corridor lies inside the delivered product footprint
+    selected_reaches:
+      start_reach_id: 40771762
+      end_reach_id: 40799268
+      reach_count: 33
+      reach_ids:
+      - 40771762
+      - 40772596
+      - 40773401
+      - 40774184
+      - 40775008
+      - 40775581
+      - 40776377
+      - 40777990
+      - 40778231
+      - 40779038
+      - 40780988
+      - 40781259
+      - 40781552
+      - 40781833
+      - 40782573
+      - 40783390
+      - 40783674
+      - 40783673
+      - 40784924
+      - 40786282
+      - 40787640
+      - 40788215
+      - 40788466
+      - 40789220
+      - 40790877
+      - 40791401
+      - 40792431
+      - 40793515
+      - 40794800
+      - 40796201
+      - 40797841
+      - 40798641
+      - 40799268
+      length_km: 66.35
+      upstream_area_start_skm: 918.8
+      upstream_area_end_skm: 5464.2
+      endorheic_reaches: []
+      non_asia_region_reaches: []
+    terminus_reach_id: 40799268
+    terminus_is_river_end: false
+    buffer_m: 1000.0
+    cap_style: flat
+    join_style: round
+    reference_offset_m: 0.01
+    upstream_trim_m: 2155.53
+    centreline_length_m: 64105.44
+    area_km2: 126.2106
+    coverage_fraction: 1.0
+    downstream_stop_reason: no_downstream_connection
+  terminus_rule: coverage_bounded
+  buffer:
+    buffer_m: 1000
+    cap_style: flat
+    join_style: round
+    quad_segs: 32
+    sensitivity:
+    - buffer_m: 500.0
+      status: constructed
+      terminus_reach_id: 40799268
+      centreline_length_m: 64105.44
+      area_km2: 63.6163
+    - buffer_m: 1000.0
+      status: constructed
+      terminus_reach_id: 40799268
+      centreline_length_m: 64105.44
+      area_km2: 126.2106
+    - buffer_m: 2000.0
+      status: no_fully_covered_corridor
+      reason: the buffered corridor is a MultiPolygon with 3 parts (1315257.6 m^2 outside the largest),
+        but the AOI contract accepts a single Polygon; a MultiPolygon must be reported, never reduced
+        to its largest part
+geometry:
+  path: configs/aoi/trishuli-corridor-hydrorivers-v10.geojson
+  sha256: 941a4079d3f317e260a91560eaebdd019ab5cf59c87f82e8e6165c7b0564b586
+  crs: EPSG:4326
+  format: GeoJSON FeatureCollection with exactly one Polygon feature
+  vertex_count: 1197
+  is_valid: true
+  validity_report: Valid Geometry
+  area_km2: 126.2106
+  bounds_4326:
+  - 85.0694946
+  - 27.8430609
+  - 85.387277
+  - 28.2837609
+  bytes: 82520
+coverage:
+  footprints:
+  - path: data/raw/sentinel1_rtc/pre_S1D_IW_GRDH_1SDV_20260816T122141_20260816T122206_004151_007980_rtc_VVVH_aoi.tif
+    sha256: 3ad729683ff5f5ad09a907338cc8f4a65fe829811289eb5e39aeb763f0106652
+    crs: EPSG:32645
+    bounds_4326:
+    - 85.0500851
+    - 27.8397989
+    - 85.3944505
+    - 28.2917849
+    width: 3313
+    height: 4961
+  - path: data/raw/sentinel1_rtc/post_S1D_IW_GRDH_1SDV_20260828T122141_20260828T122206_004326_007FA4_rtc_VVVH_aoi.tif
+    sha256: d6d7c38845ed88ce44401e9f80d89b07d826c7bbf2712e067aabae4e90c17e36
+    crs: EPSG:32645
+    bounds_4326:
+    - 85.0500851
+    - 27.8397989
+    - 85.3944505
+    - 28.2917849
+    width: 3313
+    height: 4961
+  observed_intersection_bounds_4326:
+  - 85.0500851
+  - 27.8397989
+  - 85.3944505
+  - 28.2917849
+  corridor_coverage_fraction: 1.0
+  definition: fraction of the delivered corridor polygon that lies inside the intersection of the delivered
+    product footprints, measured in EPSG:32645
+comparison_to_replaced_artifact:
+  path: configs/aoi/trishuli-corridor-UNVERIFIED.geojson
+  sha256: 9035eeee025f311be7f16af1d23737a46caee20eb0b2a8dfa144d111b9362610
+  area_km2: 132.9284
+  intersection_km2: 122.1063
+  jaccard: 0.891074
+  centroid_distance_m: 509.4
+governance:
+  permitted_use: 'Defines the analysis extent only. HydroRIVERS is not an inference input: it contributes
+    no feature, mask or label to the flood model (AGENTS.md §3).'
+  not_a_competition_boundary: Project-defined analytical AOI; the challenge does not supply this geometry.
+  attributions:
+  - Contains modified Copernicus Sentinel data 2026.
+  - Produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018
+    provided under COPERNICUS by the European Union and ESA; all rights reserved.
+  - © OpenStreetMap contributors.
+  - 'Lehner, B., Grill G. (2013): Global river hydrography and network routing: baseline data and new
+    approaches to study the world''s large river systems. Hydrological Processes, 27(15): 2171-2186. Data
+    is available at www.hydrosheds.org.'
+authorisation:
+  authorises_download: false
+  provenance_status: unverified
+  adoption: not_ratified
+  configured_acquisition_aoi: configs/data.yaml (unchanged by this milestone)
+  exploratory_exception: absent
+limitations:
+- 'Main stem only: tributaries are excluded by the approved policy, so a flood that moved up a tributary
+  valley is outside this extent.'
+- 'The downstream end is an instrument boundary (the delivered product coverage), not a hydrological node:
+  the corridor''s continuation beyond it is unobserved here.'
+- Corridor width is the M6.2-M6.5 1 km half-width, carried over for comparability; it is not yet an operator-ratified
+  parameter.
+- 'HydroRIVERS is a 15 arc-second (~460 m at this latitude) product: the centreline is a coarse delineation,
+  not a surveyed river bank, so edge exposure is approximate at the buffer margin.'
+- The reference coordinate is a published site coordinate for the border crossing (~150 m site uncertainty),
+  not a surveyed river station.

@@ -52,17 +52,41 @@ attribution:
 # Area of interest and event
 # -----------------------------------------------------------------------------
 aoi:
-  # TODO(verify): the challenge specification is not present in this repository,
-  # so no AOI geometry is defined. Do not invent coordinates.
-  name: null
+  # ---------------------------------------------------------------------------
+  # HUMAN-APPROVED GEOMETRY ONLY — M6.14 §0, implemented in M6.15.
+  # HydroRIVERS main-stem reach 40801674 / index 49; 1000 m buffer.
+  # The 250 m common same-track SAFE-swath inset is an acceptance gate,
+  # never the terminus definition. No old AOI envelope/crop selects this extent.
+  # Project-defined analytical corridor, NOT an official competition boundary.
+  #
+  # Partial delivered RTC coverage (~63.4%) is accepted ONLY with mandatory
+  # disclosure and no claims outside observed valid support. Exact measured
+  # coverage, masks semantics, provenance and approval are in the new sidecar.
+  # Historical UNVERIFIED and M6.10 geometries remain byte-unchanged on disk;
+  # their outputs are not relabelled as measurements of this adopted geometry.
+  #
+  # All acquisition gates remain closed. `unverified` is deliberately retained:
+  # geometry approval is NOT permission to download or train. No exploratory
+  # exception is configured. See docs/m6.15-aoi-adoption-implementation.md.
+  # Coverage must use the polygon, never its bounding envelope.
+  # ---------------------------------------------------------------------------
+  name: "Upper Trishuli / Bhote Koshi analytical corridor (human-approved geometry; partial observation)"
   # One of: bbox | geojson_path | named_region. The M1 acquisition interface
-  # accepts caller-supplied EPSG:4326 bbox/Polygon geometry; the case-study
-  # geometry itself remains deliberately unset.
-  representation: null
+  # accepts caller-supplied EPSG:4326 bbox/Polygon geometry.
+  representation: "geojson_path"
   bbox: null          # [min_lon, min_lat, max_lon, max_lat] when representation=bbox
-  geojson_path: null  # path under data/ when representation=geojson_path
-  crs: "EPSG:4326"    # Assumption: AOI expressed in geographic coordinates. Revisit if the
-                      # challenge specifies otherwise.
+  geojson_path: "configs/aoi/trishuli-corridor-hydrorivers-v10-m615.geojson"
+  # Pinned bytes. A mismatch refuses to load rather than silently analysing a
+  # different extent (the study area is the one input every number inherits).
+  sha256: "2ae4183f0d44f80200a889ed401ba25525c52134ba1f31d65e9f2ebc3d8965e3"
+  provenance_status: "unverified"
+  crs: "EPSG:4326"    # RFC 7946 lon/lat delivery; metric construction EPSG:32645.
+  provenance_gaps:
+    - "Human-approved project analytical extent (M6.14 §0), not a judge-selected boundary or official competition endorsement; provenance_status remains unverified and authorizes no acquisition."
+    - "HydroRIVERS v1.0 is extent-definition-only, not an inference input; coarse 15 arc-second centreline and ~150 m reference-place uncertainty remain. Source, builder, dependencies and hashes are recorded in the M6.15 sidecar."
+    - "The 1000 m buffer is human-ratified and area/coverage sensitivity is measured at 500/1000/2000 m; exposure/connectivity sensitivity remains unmeasured because authorized pre-event OSM is absent."
+    - "The study corridor extends beyond the currently available valid satellite observation coverage. Approximately 63.4% of the AOI has delivered imagery coverage; the remaining 36.6% is unobserved in the current dataset. Results apply only to the observed, valid-data area. Unobserved areas must not be interpreted as unaffected, flood-free, or undamaged."
+    - "The hydrological terminus is reach 40801674 (index 49); 250 m inset against independent same-track SAFE swaths is acceptance-only. Historical AOIs/crop inputs are preserved; old AOI-derived outputs are stale, not relabelled."
 
 event:
   # Primary case study is the August 2026 Trishuli flood, Nepal (README.md §9).
@@ -78,13 +102,28 @@ event:
 # -----------------------------------------------------------------------------
 # EARTH OBSERVATION ACQUISITION (Milestone 1)
 #
-# `aoi` is deliberately null until an operator supplies the judge-selected
-# geometry. Search windows are per sensor and remain null until availability
-# around the requested event is inspected; the CLI accepts explicit overrides.
+# `acquisition.aoi` is the loader-driving declaration. It adopts only the
+# human-approved M6.14 geometry; both AOI blocks must agree on path/hash/name/gaps.
+# It is hash-pinned, and because its `provenance_status` is `unverified` the
+# acquisition CLI will REFUSE `--download` (its own `download.enabled: false`
+# refuses it first): metadata discovery is permitted, fetching product bytes is
+# not. Search windows are per sensor and remain null until availability around
+# the requested event is inspected; the CLI accepts explicit overrides.
 # Catalogue credentials are environment-variable names, never secrets in Git.
 # -----------------------------------------------------------------------------
 acquisition:
-  aoi: null
+  aoi:
+    aoi_id: "trishuli-corridor-hydrorivers-v10-m615-2ae4183f"
+    name: "Upper Trishuli / Bhote Koshi analytical corridor (human-approved geometry; partial observation)"
+    geojson_path: "configs/aoi/trishuli-corridor-hydrorivers-v10-m615.geojson"
+    sha256: "2ae4183f0d44f80200a889ed401ba25525c52134ba1f31d65e9f2ebc3d8965e3"
+    provenance_status: "unverified"
+    provenance_gaps:
+      - "Human-approved project analytical extent (M6.14 §0), not a judge-selected boundary or official competition endorsement; provenance_status remains unverified and authorizes no acquisition."
+      - "HydroRIVERS v1.0 is extent-definition-only, not an inference input; coarse 15 arc-second centreline and ~150 m reference-place uncertainty remain. Source, builder, dependencies and hashes are recorded in the M6.15 sidecar."
+      - "The 1000 m buffer is human-ratified and area/coverage sensitivity is measured at 500/1000/2000 m; exposure/connectivity sensitivity remains unmeasured because authorized pre-event OSM is absent."
+      - "The study corridor extends beyond the currently available valid satellite observation coverage. Approximately 63.4% of the AOI has delivered imagery coverage; the remaining 36.6% is unobserved in the current dataset. Results apply only to the observed, valid-data area. Unobserved areas must not be interpreted as unaffected, flood-free, or undamaged."
+      - "The hydrological terminus is reach 40801674 (index 49); 250 m inset against independent same-track SAFE swaths is acceptance-only. Historical AOIs/crop inputs are preserved; old AOI-derived outputs are stale, not relabelled."
   provider:
     name: "cdse-odata"
     catalogue_url: "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
@@ -103,7 +142,21 @@ acquisition:
     product_types: ["IW_GRDH_1S"]
     selection_strategy: "nearest_in_time"
     require_same_relative_orbit: true
+    # The configured policy is now ENFORCED by scripts/acquire.py, not merely
+    # validated: with "fail", a run whose candidates yield no same-track pair
+    # aborts instead of writing a manifest and exiting 0.
     on_no_same_track_pair: "fail"
+    # AOI coverage gate. The value matches the Sentinel-1 RTC route's existing
+    # min_aoi_coverage (configs/baseline.yaml) so the two acquisition paths agree.
+    # Justification: a scene clipping any part of the corridor gives a flood
+    # extent bounded by the image edge, so 0.10 of missing coverage is already a
+    # real, reportable limitation; 0.9 confines that to the tile seam.
+    minimum_aoi_coverage: 0.9
+    # Both products must carry these channels. The served model consumes four
+    # channels (pre VV/VH, post VV/VH), so a single-channel or cross-polarised
+    # product would leave an input empty rather than fail loudly. Verified from
+    # the selected products' names (1SDV = dual pol VV+VH).
+    required_polarisations: ["VV", "VH"]
   sentinel2:
     enabled: true
     search_window:
@@ -117,6 +170,25 @@ acquisition:
     max_scene_cloud_percent: null
     require_same_relative_orbit: false
     on_no_same_track_pair: "record"
+    # AOI coverage gate, same value and justification as Sentinel-1 above.
+    minimum_aoi_coverage: 0.9
+    # Pre/post must be on the same MGRS tile. Matching tiles do not PROVE full
+    # coverage (the footprint gate above is what does that), but differing tiles
+    # are positive evidence that the two scenes were not produced on the same
+    # grid, so they are not a like-for-like comparison.
+    require_same_tile: true
+    # Mixed levels are permitted but ranked below same-level pairs and, when
+    # selected, recorded as a disclosed limitation: BOA (L2A) and TOA (L1C)
+    # reflectance are not interchangeable in NDWI/MNDWI. Set false to make a
+    # mixed-level pair ineligible instead.
+    allow_mixed_processing_levels: true
+    # Processing level preference for optical analysis: "L2A" (prefer BOA surface
+    # reflectance), "L1C" (prefer TOA reflectance), or null (no preference).
+    # L2A is preferred for scientifically valid optical indices (NDWI, MNDWI).
+    processing_level_preference: "L2A"
+    # If True and no eligible product matches processing_level_preference,
+    # allow falling back to the other level. If False, the selection fails.
+    allow_processing_level_fallback: true
   download:
     enabled: false
     destination: "data/raw"

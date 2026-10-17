@@ -45,6 +45,7 @@ from ..utils.provenance import ProductionInput, SceneReference, Unknown, Unknown
 
 __all__ = [
     "DiscoveredScene",
+    "SUPPORTED_FOOTPRINT_CRS",
     "SceneFootprint",
     "Sentinel1Scene",
     "Sentinel2Scene",
@@ -56,6 +57,10 @@ __all__ = [
 #: Separator the catalogue uses inside ``polarisationChannels`` (e.g. "VV&VH").
 #: Verified against live responses.
 _POLARISATION_SEPARATOR = "&"
+
+#: The CRS the provider expresses footprints in, and the only one the coverage
+#: gate accepts without an explicit reprojection.
+SUPPORTED_FOOTPRINT_CRS = "EPSG:4326"
 
 #: Product names begin with the satellite unit, e.g. "S1A_IW_GRDH_1SDV_...",
 #: "S2B_MSIL2A_...". Deliberately strict: anything that does not match this
@@ -116,16 +121,37 @@ def derive_platform_unit(product_name: str) -> Optional[str]:
 class SceneFootprint(BaseModel):
     """Spatial footprint of a scene, as reported by the provider.
 
-    Stored as a GeoJSON-style geometry. Kept because the footprint determines
-    whether the AOI is fully or only partially covered, which is a limitation
-    that must reach the report: a scene that clips the AOI gives a flood extent
-    that is bounded by the image edge rather than by the flood.
+    Stored as a GeoJSON-style geometry **with the CRS it is expressed in**.
+    Kept because the footprint determines whether the AOI is fully or only
+    partially covered, which is a limitation that must reach the report: a scene
+    that clips the AOI gives a flood extent that is bounded by the image edge
+    rather than by the flood.
+
+    ``crs`` is a required-in-practice field with an explicit default rather than
+    an implicit assumption. The CDSE OData ``GeoFootprint`` is the geography type
+    and is WGS84 by definition, so the adapter records
+    :data:`SUPPORTED_FOOTPRINT_CRS` at parse time. Carrying the value means a
+    footprint in any other CRS is *detected* at the coverage gate instead of
+    being silently compared as though degrees were the same unit everywhere
+    (``AGENTS.md`` §7).
+
+    ``coordinates`` is intentionally unvalidated here: this model records what
+    the provider said, and structural validation happens where the geometry is
+    actually used (`floodmap.acquisition.coverage`), so a malformed footprint
+    becomes a recorded coverage rejection rather than a discovery failure.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     type: str = Field(description="GeoJSON geometry type, e.g. Polygon or MultiPolygon.")
-    coordinates: Any = Field(description="GeoJSON coordinate array, as provided.")
+    coordinates: Any = Field(default=None, description="GeoJSON coordinate array, as provided.")
+    crs: str = Field(
+        default=SUPPORTED_FOOTPRINT_CRS,
+        description=(
+            "CRS the coordinates are expressed in. Only "
+            f"{SUPPORTED_FOOTPRINT_CRS} is accepted by the coverage gate."
+        ),
+    )
 
     @field_validator("type")
     @classmethod
@@ -136,7 +162,7 @@ class SceneFootprint(BaseModel):
         return v
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"type": self.type, "coordinates": self.coordinates}
+        return {"type": self.type, "coordinates": self.coordinates, "crs": self.crs}
 
 
 class DiscoveredScene(BaseModel):

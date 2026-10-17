@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 from ..errors import ProviderAuthError, ProviderError, ProviderHttpError, ProviderMalformedResponse
 from ..outcomes import DiscoveryStatus, DownloadStatus
 from ..scenes import (
+    SUPPORTED_FOOTPRINT_CRS,
     DiscoveredScene,
     SceneFootprint,
     Sentinel1Scene,
@@ -137,8 +138,16 @@ def _scene(product: Any, request: SearchRequest, base_url: str) -> DiscoveredSce
         product_type=product_type,
         platform_short_name=platform,
         platform_unit=derive_platform_unit(scene_id) or catalogue_unknown("platform unit"),
+        # The OData GeoFootprint is the geography type, i.e. WGS84, and the
+        # query itself is issued as SRID=4326. Recording the CRS here rather
+        # than assuming it at the coverage gate is what makes a provider change
+        # detectable instead of silently misinterpreted.
         footprint=(
-            SceneFootprint.model_validate(footprint)
+            SceneFootprint.model_validate(
+                {**footprint, "crs": SUPPORTED_FOOTPRINT_CRS}
+                if isinstance(footprint, dict)
+                else footprint
+            )
             if footprint is not None
             else catalogue_unknown("GeoFootprint")
         ),

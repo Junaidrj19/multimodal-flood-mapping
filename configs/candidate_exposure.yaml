@@ -1,0 +1,86 @@
+# =============================================================================
+# configs/candidate_exposure.yaml: M6.4 infrastructure exposure to M6.3
+# Sentinel-1 RTC change candidates.
+#
+# Multimodal AI Hackathon 2026, Track B.
+#
+# Consumed by src/floodmap/infrastructure/candidate_mask.py and
+# src/floodmap/infrastructure/candidate_exposure.py.
+#
+# WHAT THIS STAGE MEASURES
+# ------------------------
+# Spatial intersection between pre-event OSM infrastructure and the M6.3
+# *change-candidate* mask. A candidate pixel is a dual-polarisation gamma0
+# darkening observation. It is NOT confirmed flood, NOT ground truth and NOT
+# verified damage, so every verdict this stage produces is deliberately named
+# "candidate_*" rather than "flooded" or "damaged" (AGENTS.md §8).
+#
+# This file is separate from configs/impact.yaml on purpose. impact.yaml owns
+# exposure to the frozen three-class segmentation mask (no water / permanent
+# water / floods). This stage consumes a two-class candidate mask plus an
+# explicit not-observed value and must not be able to borrow the flood-class
+# semantics by accident.
+# =============================================================================
+
+version: 0.1.0
+
+# -----------------------------------------------------------------------------
+# Inputs
+# -----------------------------------------------------------------------------
+inputs:
+  # The candidate mask must declare this stage tag. A raster from any other
+  # stage is refused rather than reinterpreted.
+  candidate_mask_stage: m6.3-rtc-change-candidates-0.2.0
+
+  # The candidate mask and its valid-data mask are compared pixel by pixel, so
+  # an identical grid is mandatory (AGENTS.md §7).
+  require_same_grid: true
+  alignment_tolerance: 0.0
+
+  # Pre-event OpenStreetMap infrastructure.
+  #
+  # RETRIEVAL IS DISABLED IN THIS STAGE. The Trishuli AOI is configured as
+  # UNVERIFIED (AreaOfInterest.authorises_download is false), and an UNVERIFIED
+  # extent must not authorise a download. This stage therefore only reads OSM
+  # layers that already exist on disk, written earlier by
+  # scripts/impact.py::write_osm_layers in EPSG:4326 GeoJSON.
+  osm:
+    allow_download: false
+    # Resolved by the operator with --osm-dir. There is no default, because a
+    # default path would imply layers exist for some AOI that nobody chose.
+    layer_dir: null
+    # Absent required layers are reported as an explicit blocker. They are
+    # never substituted, synthesised or inferred.
+    required_layers: [roads, buildings, settlements]
+    optional_layers: [bridges, hubs]
+    # osm_provenance.json must sit beside the layers, so the snapshot date and
+    # AOI the layers belong to are recorded rather than assumed.
+    require_provenance_sidecar: true
+    # The OSM snapshot must be strictly before the event date (AGENTS.md §3).
+    require_pre_event_snapshot: true
+
+# -----------------------------------------------------------------------------
+# Intersection rules
+#
+# Thresholds mirror configs/impact.yaml (exposure) so that candidate
+# intersection and flood-class exposure are directly comparable. They are
+# restated here rather than imported so this stage can be varied for
+# sensitivity analysis without touching the segmentation-mask contract
+# (AGENTS.md §9, §14).
+# -----------------------------------------------------------------------------
+intersection:
+  # Lines are sampled every this many metres: half the 10 m M6.3 pixel, so
+  # every pixel a road crosses receives at least one sample.
+  line_sample_step_m: 5.0
+  # A line intersects candidates when at least this much of it lies on
+  # candidate pixels, or all of it when it is shorter than the threshold.
+  # One pixel width.
+  line_min_candidate_m: 10.0
+  # A polygon (building) intersects candidates when at least this many
+  # candidate pixels touch its footprint.
+  polygon_min_candidate_px: 1
+  # Settlement nodes are points. 0.0 means the verdict uses the single pixel
+  # containing the point, which is the most conservative reading of a point
+  # feature. A positive radius turns the point into a disc and is a documented
+  # analysis assumption, not a default.
+  settlement_buffer_m: 0.0

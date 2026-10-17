@@ -32,6 +32,17 @@ import yaml
 #:
 #: ``baseline`` holds the Sentinel-1 change-detection baseline (source, pair
 #: rule, thresholds): a non-learned flood mask the model must beat.
+#:
+#: ``candidate_exposure`` holds the M6.4 rules for intersecting pre-event OSM
+#: infrastructure with the M6.3 change-candidate mask. It is separate from
+#: ``impact`` because that file owns exposure to the three-class segmentation
+#: mask, and a candidate mask must not be able to borrow flood-class semantics.
+#:
+#: ``candidate_disruption`` holds the M6.5 hypothetical closure rule and graph
+#: assumptions used to turn M6.4 candidate exposure into a scenario comparison
+#: of road-network connectivity. Separate from ``impact`` for the same reason:
+#: that file's connectivity block is driven by predicted flood length, whereas
+#: this one is driven by a rule-based radar-change measurement.
 EXPECTED_CONFIGS: tuple[str, ...] = (
     "data",
     "preprocessing",
@@ -40,6 +51,9 @@ EXPECTED_CONFIGS: tuple[str, ...] = (
     "evaluation",
     "impact",
     "baseline",
+    "rtc_change_candidates",
+    "candidate_exposure",
+    "candidate_disruption",
 )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -16,7 +17,12 @@ from floodmap.acquisition.aoi import AreaOfInterest
 from floodmap.acquisition.manifest import AcquisitionManifest
 from floodmap.acquisition.outcomes import DiscoveryStatus
 from floodmap.acquisition.providers.base import DiscoveryResult, SearchRequest
-from floodmap.acquisition.scenes import Sentinel1Scene, Sentinel2Scene, SensorKind
+from floodmap.acquisition.scenes import (
+    SceneFootprint,
+    Sentinel1Scene,
+    Sentinel2Scene,
+    SensorKind,
+)
 from floodmap.acquisition.selection import select_sentinel1_pair, select_sentinel2_pair
 from floodmap.acquisition.temporal import EventSpec, SearchWindow
 from floodmap.preprocessing.config import PreprocessingConfig
@@ -45,6 +51,13 @@ PLAN = EVENT.plan(SearchWindow(before_days=5, after_days=5))
 TRANSFORM = from_origin(0.0, 4.0, 1.0, 1.0)
 
 
+#: Selection requires a measured AOI coverage verdict, so these synthetic
+#: scenes must carry real geometry covering `AOI` above rather than none.
+_COVERING_FOOTPRINT = SceneFootprint(
+    type="Polygon", coordinates=[[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.0, 0.0]]]
+)
+
+
 def _s1(scene_id: str, acquired_at: datetime) -> Sentinel1Scene:
     return Sentinel1Scene(
         scene_id=scene_id,
@@ -57,6 +70,7 @@ def _s1(scene_id: str, acquired_at: datetime) -> Sentinel1Scene:
         relative_orbit=12,
         orbit_direction="DESCENDING",
         polarisations=("VV", "VH"),
+        footprint=_COVERING_FOOTPRINT,
     )
 
 
@@ -70,14 +84,19 @@ def _s2(scene_id: str, acquired_at: datetime) -> Sentinel2Scene:
         platform_unit="S2A",
         provider="cdse-odata",
         scene_cloud_percent=12.0,
+        processing_level="L2A",
+        tile_id="45RUL",
+        footprint=_COVERING_FOOTPRINT,
     )
 
 
 def _manifest(sensor: SensorKind, before, after) -> AcquisitionManifest:
     selection = (
-        select_sentinel1_pair([before, after], PLAN)
+        select_sentinel1_pair([before, after], PLAN, aoi=AOI)
         if sensor is SensorKind.SENTINEL1
-        else select_sentinel2_pair([before, after], PLAN, strategy="nearest_in_time")
+        else select_sentinel2_pair(
+            [before, after], PLAN, aoi=AOI, strategy="nearest_in_time"
+        )
     )
     request = SearchRequest(
         aoi=AOI,
@@ -351,6 +370,205 @@ def test_sentinel2_quality_mask_is_pixel_based_and_scene_cloud_is_preserved(tmp_
     assert artifacts[0].quality["scene_cloud_percent"] == 12.0
     assert artifacts[0].quality["aoi_cloud_percent"]["unknown"] is True
     assert artifacts[0].quality["quality_mask"]["masked_pixel_percent"] > 0
+
+
+def _write_scl_raster(
+    path: Path, arrays: list[np.ndarray], descriptions: tuple[str, ...], *, dtype="int16", nodata=0
+):
+    """Write a synthetic product carrying a categorical SCL band.
+
+    `_write_raster` forces float32, which an SCL band must not be: the pipeline
+    refuses a non-integral SCL, and that refusal is itself tested below.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=4,
+        height=4,
+        count=len(arrays),
+        dtype=dtype,
+        crs="EPSG:4326",
+        transform=TRANSFORM,
+        nodata=nodata,
+    ) as dataset:
+        for index, array in enumerate(arrays, start=1):
+            dataset.write(array.astype(dtype), index)
+            dataset.set_band_description(index, descriptions[index - 1])
+
+
+#: A 4x4 SCL with a known composition inside the 4x4 AOI:
+#: 2 cloud, 1 cloud shadow, 1 cirrus, 1 no-data, 11 usable surface pixels.
+_SCL_FIXTURE = np.array(
+    [
+        [4, 4, 4, 4],
+        [4, 8, 9, 4],
+        [4, 3, 10, 4],
+        [4, 4, 4, 0],
+    ],
+    dtype="int16",
+)
+
+
+def _scl_config():
+    return _config(
+        target_grid={
+            "crs": "EPSG:4326",
+            "resolution_m": 1.0,
+            "transform": list(TRANSFORM[:6]),
+            "width": 4,
+            "height": 4,
+            # The SCL is a class raster, so its method is declared per kind and
+            # the shared categorical warp refuses an averaging method.
+            "resampling": {"categorical_label": "nearest"},
+        },
+        sentinel2={
+            "required_bands": ["B02", "B03"],
+            "cloud_mask_source": "scl",
+            "quality_mask": {"enabled": True, "band_name": "SCL", "valid_values": None},
+            "resampling": "nearest",
+            "output_nodata": -9999.0,
+        },
+    )
+
+
+def _scl_sentinel2_run(tmp_path):
+    before = _s2("s2-before", datetime(2024, 1, 9, 12, tzinfo=timezone.utc))
+    after = _s2("s2-after", datetime(2024, 1, 11, 12, tzinfo=timezone.utc))
+    manifest = _manifest(SensorKind.SENTINEL2, before, after)
+    paths = {}
+    for scene in (before, after):
+        path = tmp_path / f"{scene.scene_id}.tif"
+        _write_scl_raster(
+            path,
+            [np.full((4, 4), 500, dtype="int16"), np.full((4, 4), 700, dtype="int16"), _SCL_FIXTURE],
+            ("B02", "B03", "SCL"),
+        )
+        paths[scene.scene_id] = path
+    metadata = {scene.scene_id: {"pair_geometry_verified": True} for scene in (before, after)}
+    artifacts = preprocess_sentinel2_pair(
+        manifest,
+        paths,
+        tmp_path / "processed",
+        config=_scl_config(),
+        grid=_grid(),
+        source_metadata=metadata,
+    )
+    return artifacts
+
+
+def test_scl_masking_separates_missing_masked_and_valid_over_the_aoi(tmp_path):
+    """The wired SCL path reports the three states, over the AOI, on the grid."""
+    artifacts = _scl_sentinel2_run(tmp_path)
+    report = artifacts[0].quality["optical_validation"]
+
+    states = report["observation_states"]
+    assert states["aoi_pixels"] == 16
+    assert states["counts"]["valid_observations"] == 11
+    assert states["counts"]["masked_cloud"] == 2
+    assert states["counts"]["masked_cloud_shadow"] == 1
+    assert states["counts"]["masked_cirrus"] == 1
+    assert states["counts"]["missing_no_data_class"] == 1
+    assert states["fractions"]["valid_observations"] == pytest.approx(11 / 16)
+    assert states["fractions"]["masked"] == pytest.approx(4 / 16)
+    assert states["fully_accounted_for"] is True
+    assert states["denominator"] == "pixels inside the AOI"
+
+    # Cloud is now measured, not "unknown": the placeholder is upgraded only
+    # when a mask actually exists to measure it from.
+    assert artifacts[0].quality["aoi_cloud_percent"]["unknown"] is False
+    assert artifacts[0].quality["aoi_cloud_percent"]["cloud_fraction"] == pytest.approx(2 / 16)
+    # Per-band availability is recorded alongside the observations.
+    assert report["bands"]["complete"] is True
+    # Categorical SCL is warped with nearest neighbour, and says so.
+    assert report["resampling"]["scl"] == "nearest"
+    assert report["masking"]["scl_band"] == "SCL"
+    assert report["limitations"]
+
+
+def test_scl_validation_report_is_written_as_machine_readable_json(tmp_path):
+    artifacts = _scl_sentinel2_run(tmp_path)
+    path = Path(artifacts[0].quality["optical_validation"]["report_path"])
+    assert path.is_file()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["artifact"] == "sentinel2_optical_validation"
+    assert payload["scene_id"] == "s2-before"
+    assert payload["temporal_role"] == "before"
+    assert payload["observation_states"]["counts"]["valid_observations"] == 11
+    assert payload["scl"]["reference"]
+
+
+def test_scl_band_that_is_not_integral_is_refused(tmp_path):
+    """A misread band must fail loudly rather than be truncated to classes."""
+    before = _s2("s2-before", datetime(2024, 1, 9, 12, tzinfo=timezone.utc))
+    after = _s2("s2-after", datetime(2024, 1, 11, 12, tzinfo=timezone.utc))
+    manifest = _manifest(SensorKind.SENTINEL2, before, after)
+    paths = {}
+    for scene in (before, after):
+        path = tmp_path / f"{scene.scene_id}.tif"
+        _write_raster(
+            path,
+            [np.full((4, 4), 500.0), np.full((4, 4), 700.0), np.full((4, 4), 4.5)],
+            ("B02", "B03", "SCL"),
+        )
+        paths[scene.scene_id] = path
+    metadata = {scene.scene_id: {"pair_geometry_verified": True} for scene in (before, after)}
+    with pytest.raises(InputValidationError, match="non-integral"):
+        preprocess_sentinel2_pair(
+            manifest,
+            paths,
+            tmp_path / "processed",
+            config=_scl_config(),
+            grid=_grid(),
+            source_metadata=metadata,
+        )
+
+
+def test_scl_source_does_not_require_the_meaningless_valid_values_list(tmp_path):
+    """`valid_values` is a values-based concept; SCL is class-based.
+
+    With `cloud_mask_source: scl` the mask is built from the class table, so the
+    run must not demand a `valid_values` list — while a values-based source still
+    must, or it would mask nothing and report success.
+    """
+    artifacts = _scl_sentinel2_run(tmp_path)  # valid_values omitted: accepted
+    assert artifacts[0].quality["quality_mask"]["source"] == "scl"
+    assert "valid_values" not in artifacts[0].quality["quality_mask"]
+
+    before = _s2("s2-before", datetime(2024, 1, 9, 12, tzinfo=timezone.utc))
+    after = _s2("s2-after", datetime(2024, 1, 11, 12, tzinfo=timezone.utc))
+    manifest = _manifest(SensorKind.SENTINEL2, before, after)
+    paths = {}
+    for scene in (before, after):
+        path = tmp_path / f"values-{scene.scene_id}.tif"
+        _write_raster(
+            path,
+            [np.ones((4, 4)), np.ones((4, 4)), np.zeros((4, 4))],
+            ("B02", "B03", "QA"),
+        )
+        paths[scene.scene_id] = path
+    metadata = {scene.scene_id: {"pair_geometry_verified": True} for scene in (before, after)}
+    with pytest.raises(PreprocessingConfigurationError, match="valid_values"):
+        preprocess_sentinel2_pair(
+            manifest,
+            paths,
+            tmp_path / "processed-values",
+            config=_config(
+                sentinel2={
+                    "required_bands": ["B02", "B03"],
+                    "quality_mask": {
+                        "enabled": True,
+                        "band_name": "QA",
+                        "valid_values": None,
+                    },
+                    "resampling": "nearest",
+                    "output_nodata": -9999.0,
+                }
+            ),
+            grid=_grid(),
+            source_metadata=metadata,
+        )
 
 
 def test_dem_source_and_metadata_are_preserved(tmp_path):

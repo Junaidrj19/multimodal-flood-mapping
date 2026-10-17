@@ -9,10 +9,24 @@ it onto the analysis grid with provenance.
 Source
 ------
 ``sentinel-1-rtc``: Sentinel-1 IW GRD, radiometrically terrain corrected to
-gamma0 (linear power) by Catalyst with the Copernicus DEM, 10 m, UTM. Licence
-CC-BY-4.0 (Catalyst, Microsoft); it is modified Copernicus Sentinel data.
-``cop-dem-glo-30``: Copernicus DEM GLO-30. Both are read anonymously with a
-short-lived SAS token from the Planetary Computer token endpoint.
+gamma0 (linear power) by Catalyst, 10 m, UTM. Licence CC-BY-4.0 (Catalyst,
+Microsoft); it is modified Copernicus Sentinel data.
+
+**The RTC elevation source is PlanetDEM, not the Copernicus DEM.** Corrected
+2026-10-15 (M6.2) against the provider's own collection description, which
+states the terrain correction uses PlanetDEM and follows D. Small, "Flattening
+Gamma" (IEEE TGRS 49(8), 2011). The earlier wording here credited the
+Copernicus DEM, which would have attached a Copernicus WorldDEM credit to a
+product that does not use it. Calibration follows ESA-EOPG-CSCOP-TN-0002.
+
+Note that the values are **gamma0**, not sigma0: the documented gamma
+adjustment divides by the cosine of the incidence angle, so
+``gamma0 = sigma0 / cos(theta)`` and the two are not interchangeable.
+
+``cop-dem-glo-30``: Copernicus DEM GLO-30 — a *separate* collection read by
+this module for terrain analysis, and the only place a Copernicus DEM credit
+applies. Both are read anonymously with a short-lived SAS token from the
+Planetary Computer token endpoint.
 
 Pair rule
 ---------
