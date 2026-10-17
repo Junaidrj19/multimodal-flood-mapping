@@ -23,5 +23,11 @@ Modules
 -------
 * ``graph``: road pieces between junctions as an undirected multigraph.
 * ``connectivity``: before/after reachability from settlements to hub groups,
-  disruption-threshold sensitivity, routes and settlement statuses.
+  disruption-threshold sensitivity, routes and settlement statuses, driven by
+  the predicted flood class.
+* ``candidate_disruption`` (M6.5): the same graph and routing kernel driven by
+  M6.4 candidate exposure instead, under an explicit *hypothetical* closure
+  rule. Candidate intersection is radar-change evidence rather than observed
+  impassability, so its outputs are named and documented as a scenario
+  comparison against the baseline graph.
 """

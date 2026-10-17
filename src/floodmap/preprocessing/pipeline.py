@@ -30,7 +30,20 @@ from .grid import (
     require_rasterio,
 )
 from .inputs import ManifestSourceProduct, PreprocessingInputs
-from .reprojection import linear_to_db_after_resampling, reproject_continuous
+from .reprojection import (
+    linear_to_db_after_resampling,
+    reproject_categorical,
+    reproject_continuous,
+)
+from .s2_optical import (
+    SCL_CLASSES,
+    OpticalValidationReport,
+    aoi_mask_for_grid,
+    aoi_statistics,
+    band_availability,
+    classify_scl,
+    observation_mask,
+)
 from .validation import (
     RasterMetadata,
     read_valid_mask,
@@ -52,6 +65,10 @@ __all__ = [
     "preprocess_sentinel2_pair",
     "validate_preprocessing_pair_alignment",
 ]
+
+#: Target-pixel value used by the shared categorical warp for "no observation
+#: reached this pixel". Distinct from every SCL class code, which are 0-11.
+_SCL_IGNORE_INDEX = -1
 
 
 def _require_import() -> None:
@@ -154,6 +171,51 @@ def _reproject_to_grid(
     # Preserved key name so existing artifact consumers keep working.
     provenance["source_to_target"] = provenance.pop("source_to_target_alignment")
     return outcome.data, outcome.valid, provenance
+
+
+def _aoi_geojson_on_grid(aoi: Any, grid: AnalysisGrid, geometry: Mapping[str, Any]) -> tuple[dict, bool]:
+    """Express the AOI as a GeoJSON Polygon in the analysis grid's CRS.
+
+    Returns the geometry and whether a reprojection was applied. The grid CRS in
+    production is projected while the AOI is EPSG:4326, so the reprojection is the
+    normal case; it is recorded in the report rather than assumed, because a mask
+    built from coordinates in the wrong CRS silently selects the wrong pixels
+    (``AGENTS.md`` §7).
+    """
+    if aoi is not None and hasattr(aoi, "geometry"):
+        geometry = aoi.geometry
+        crs = getattr(aoi, "crs", None)
+    else:
+        crs = geometry.get("crs") if isinstance(geometry, Mapping) else None
+
+    exterior = getattr(geometry, "exterior", None)
+    holes = getattr(geometry, "holes", ())
+    if exterior is None and hasattr(geometry, "to_ring"):
+        exterior, holes = geometry.to_ring(), ()
+    if exterior is None:
+        exterior = geometry["exterior"]
+        holes = geometry.get("holes", ())
+    ring = [[float(x), float(y)] for x, y in exterior]
+    polygons = [ring] + [[[float(x), float(y)] for x, y in hole] for hole in holes]
+
+    reprojected = False
+    source_crs = crs or "EPSG:4326"
+    if str(source_crs) != str(grid.crs):
+        from pyproj import Transformer
+
+        transformer = Transformer.from_crs(source_crs, grid.crs, always_xy=True)
+        rings = []
+        for polygon in polygons:
+            xs, ys = zip(*polygon)
+            rings.append(
+                [
+                    [float(lon), float(lat)]
+                    for lon, lat in zip(*transformer.transform(list(xs), list(ys)))
+                ]
+            )
+        polygons = rings
+        reprojected = True
+    return {"type": "Polygon", "coordinates": polygons}, reprojected
 
 
 def _require_pair_geometry(
@@ -362,11 +424,20 @@ def preprocess_sentinel2_pair(
     if settings.resampling is None:
         raise PreprocessingConfigurationError("sentinel2.resampling is unresolved")
     quality_settings = settings.quality_mask
-    if quality_settings.enabled is True and (
-        quality_settings.band_name is None or quality_settings.valid_values is None
-    ):
+    if quality_settings.enabled is True and quality_settings.band_name is None:
         raise PreprocessingConfigurationError(
-            "enabled Sentinel-2 quality_mask requires band_name and valid_values"
+            "enabled Sentinel-2 quality_mask requires band_name"
+        )
+    if (
+        quality_settings.enabled is True
+        and settings.cloud_mask_source != "scl"
+        and quality_settings.valid_values is None
+    ):
+        # The SCL path is class-based, so a valid_values list would be
+        # meaningless there. Any other source is values-based and still needs it.
+        raise PreprocessingConfigurationError(
+            "enabled Sentinel-2 quality_mask requires band_name and valid_values "
+            "unless cloud_mask_source is 'scl'"
         )
     artifacts = []
     for label, source in (("before", before), ("after", after)):
@@ -388,7 +459,7 @@ def preprocess_sentinel2_pair(
                 "note": "AOI cloud fraction requires a pixel mask clipped to the AOI.",
             },
         }
-        if quality_settings.enabled is True:
+        if quality_settings.enabled is True and settings.cloud_mask_source != "scl":
             all_descriptions = {
                 description.strip(): index + 1
                 for index, description in enumerate(metadata.descriptions)
@@ -414,6 +485,39 @@ def preprocess_sentinel2_pair(
         else:
             operations.append("quality_mask:unavailable_not_inferred")
             quality_extra["quality_mask"] = {"status": "not_available"}
+        optical_report: Optional[OpticalValidationReport] = None
+        if settings.cloud_mask_source == "scl":
+            # The product's own Scene Classification Layer: the documented way to
+            # know *why* a pixel is unusable (cloud, cirrus, shadow, no-data)
+            # rather than only that it is. Masking here is by class, so a cloudy
+            # pixel and a pixel outside the granule stay distinguishable.
+            scl_name = quality_settings.band_name or "SCL"
+            scl_index = _band_indexes(metadata, (scl_name,))[0]
+            with rasterio.open(source.path) as dataset:
+                raw_scl = dataset.read(scl_index)
+            scl_codes = np.rint(np.asarray(raw_scl, dtype="float64"))
+            if not np.allclose(scl_codes, np.asarray(raw_scl, dtype="float64")):
+                raise InputValidationError(
+                    f"band {scl_name!r} of {source.path} holds non-integral values, so it is "
+                    "not the categorical SCL band; refusing to interpret it as classes"
+                )
+            scl_source = scl_codes.astype("int32")
+            scl_valid = read_valid_mask(source.path, band_indexes=(scl_index,))
+            scl_summary = classify_scl(scl_source)
+            scl_observable = observation_mask(scl_source)
+            valid &= scl_observable
+            operations.append(
+                f"scl_mask:{scl_name} classes={len(SCL_CLASSES)} "
+                f"excluded={int((~scl_observable).sum())}"
+            )
+            quality_extra["quality_mask"] = {
+                "band_name": scl_name,
+                "source": "scl",
+                "masked_pixel_percent": 100.0
+                * float((~scl_observable).sum())
+                / float(scl_observable.size),
+                "categories": scl_summary.to_dict(),
+            }
         if settings.reflectance_scale is not None or settings.reflectance_offset is not None:
             if settings.reflectance_scale is None or settings.reflectance_offset is None:
                 raise PreprocessingConfigurationError(
@@ -440,6 +544,94 @@ def preprocess_sentinel2_pair(
                 "prepare_common_analysis_grid",
             ]
         )
+        if settings.cloud_mask_source == "scl":
+            # Statistics are computed on the ANALYSIS GRID over the AOI, after the
+            # warp, so "valid pixel fraction" describes the pixels this project
+            # will actually use, not the granule's own coverage.
+            # The SCL is warped by the SHARED categorical reprojection, not by a
+            # local warp: M2 and M5 must not diverge in how a class raster meets
+            # the canonical grid, and that path already refuses averaging.
+            scl_grid = reproject_categorical(
+                scl_source,
+                scl_valid,
+                source=metadata.as_grid(),
+                target=grid,
+                ignore_index=_SCL_IGNORE_INDEX,
+                resampling_name=config.require_resampling("categorical_label"),
+                semantic_values=tuple(sorted(SCL_CLASSES)),
+            )
+            # `ignore_index` means "no observation reached this target pixel".
+            # That is the same statement as SCL class 0 (no data), so it is
+            # recorded as missing data rather than as an unknown class.
+            scl_on_grid = np.where(scl_grid.data == _SCL_IGNORE_INDEX, 0, scl_grid.data)
+            aoi_geometry: Any = None
+            aoi_source = getattr(manifest, "aoi", None)
+            aoi_geometry = getattr(aoi_source, "geometry", None)
+            if aoi_geometry is None and isinstance(aoi_source, Mapping):
+                aoi_geometry = aoi_source.get("geometry")
+            if aoi_geometry is not None:
+                geojson, reprojected = _aoi_geojson_on_grid(aoi_source, grid, aoi_geometry)
+                aoi_mask = aoi_mask_for_grid(geojson, grid)
+                # `valid` was rebound to the warped mask by _reproject_to_grid
+                # above, so the statistic and the stored artifact mask are the
+                # same array rather than two computations that could drift.
+                statistics = aoi_statistics(
+                    scl_on_grid, aoi_mask, raster_valid=valid, scl_summary=scl_summary
+                )
+                bands = band_availability(
+                    tuple(d for d in metadata.descriptions if d), settings.required_bands
+                )
+                optical_report = OpticalValidationReport(
+                    scene_id=source.scene_id,
+                    temporal_role=label,
+                    scl_summary=scl_summary,
+                    statistics=statistics,
+                    bands=bands,
+                    reflectance_scaling={
+                        "scale": settings.reflectance_scale,
+                        "offset": settings.reflectance_offset,
+                        "source": "configuration",
+                    },
+                    resampling={
+                        "reflectance": settings.resampling,
+                        "scl": config.require_resampling("categorical_label"),
+                        "scl_method_source": "target_grid.resampling.categorical_label",
+                        "scl_reprojection_provenance": dict(scl_grid.provenance),
+                    },
+                    masking={
+                        "scl_band": quality_settings.band_name or "SCL",
+                        "categories": scl_summary.to_dict(),
+                        "invalid_pixel_policy": settings.invalid_pixel_policy,
+                        "nodata_value": settings.nodata_value,
+                    },
+                    limitations=(
+                        "Valid-pixel and cloud fractions are computed over the AOI on the "
+                        "analysis grid; they are availability statistics, not a flood "
+                        "observation, and say nothing about whether water is present.",
+                        "Snow/ice is reported separately and excluded from valid "
+                        "observations; in this project's monsoon-season AOI a large snow "
+                        "count would indicate an acquisition-date or AOI problem.",
+                        "SCL is the product's own classification. Its accuracy is not "
+                        "independently verified here.",
+                    ),
+                )
+                report_path = optical_report.write(
+                    Path(output_dir)
+                    / "sentinel2"
+                    / f"{label}_{source.scene_id}.optical-validation.json"
+                )
+                quality_extra["optical_validation"] = {
+                    **optical_report.to_dict(),
+                    "report_path": str(report_path),
+                }
+                quality_extra["aoi_cloud_percent"] = {
+                    "unknown": False,
+                    "source": "scl",
+                    "cloud_fraction": statistics.cloud_fraction,
+                    "cloud_shadow_fraction": statistics.shadow_fraction,
+                    "valid_fraction": statistics.valid_fraction,
+                }
+
         quality_extra["alignment"] = alignment
         artifacts.append(
             write_raster_artifact(

@@ -151,16 +151,24 @@ class TestC1CanonicalCrs:
             assert dataset in crs.zone_sources
 
     def test_production_epsg_is_derived_not_pinned(self):
-        """`aoi` is deliberately null, so a pinned EPSG would be invented.
+        """The production EPSG stays DERIVED while the AOI is unverified.
 
-        The expected zone is recorded so the decision is reproducible, with its
-        status marked DERIVED so nobody mistakes it for a frozen value. The
-        only candidate geometry on disk has no provenance.
+        M6.14 approves an analytical geometry, not a global training/production
+        CRS contract change or acquisition permission. Provenance remains
+        UNVERIFIED and production CRS remains derived per AOI.
+
+        The AOI is now supplied as a hash-pinned `geojson_path` rather than a
+        `bbox`: the bounding envelope must never replace the study polygon.
         """
         crs = load_m4_contract().canonical_crs
         assert crs.production_expected_epsg_status.startswith("DERIVED")
-        assert load_config("data")["aoi"]["bbox"] is None
-        assert load_config("data")["aoi"]["geojson_path"] is None
+        aoi = load_config("data")["aoi"]
+        # Still no bbox: the envelope is not an acceptable stand-in.
+        assert aoi["bbox"] is None
+        # A polygon path is now configured, and it is pinned and unverified.
+        assert aoi["geojson_path"] == "configs/aoi/trishuli-corridor-hydrorivers-v10-m615.geojson"
+        assert aoi["provenance_status"] == "unverified"
+        assert len(aoi["sha256"]) == 64
 
     def test_source_crs_is_retained_independently_for_both_corpora(self):
         """A target-CRS decision must not overwrite recorded source metadata."""

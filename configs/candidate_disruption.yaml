@@ -1,0 +1,127 @@
+# =============================================================================
+# configs/candidate_disruption.yaml: M6.5 road-network disruption and
+# settlement connectivity under hypothetical candidate-closure scenarios.
+#
+# Multimodal AI Hackathon 2026, Track B.
+#
+# Consumed by src/floodmap/network/candidate_disruption.py.
+#
+# WHAT THIS STAGE PRODUCES
+# ------------------------
+# A *scenario* comparison, not an observation. M6.4 measured how much of each
+# pre-event OSM road lies on M6.3 Sentinel-1 RTC darkening-candidate pixels.
+# Nothing in that measurement establishes that such a road is impassable
+# (AGENTS.md §8: a mask intersecting a road is evidence of spatial exposure,
+# not of physical destruction). This stage therefore does not "apply" observed
+# damage. It asks a counterfactual question:
+#
+#   if every candidate-intersecting road were closed, which settlements would
+#   lose their modelled road route to a reference hub?
+#
+# Every number this stage emits is conditional on that stated closure rule.
+#
+# This file is separate from configs/impact.yaml on purpose. impact.yaml owns
+# connectivity against the frozen three-class segmentation mask (no water /
+# permanent water / floods), where "flooded_m" is a prediction of inundation.
+# Here the driving quantity is "candidate_m": a rule-based radar-change
+# measurement. The two must not be able to borrow each other's semantics.
+# =============================================================================
+
+version: 0.1.0
+
+# -----------------------------------------------------------------------------
+# Inputs
+#
+# RETRIEVAL IS DISABLED IN THIS STAGE, for the same reason as M6.4: the study
+# AOI is configured UNVERIFIED (AreaOfInterest.authorises_download is false),
+# and an UNVERIFIED extent must not authorise a download. Road geometry,
+# settlements and hubs are read only from artifacts that already exist on disk.
+# -----------------------------------------------------------------------------
+inputs:
+  # The exposure artifact must declare this stage tag. Output from any other
+  # stage is refused rather than reinterpreted.
+  candidate_exposure_stage: m6.4-candidate-infrastructure-exposure-0.1.0
+
+  # Filenames written by src/floodmap/infrastructure/candidate_exposure.py
+  # ::write_candidate_exposure_artifacts. M6.5 reads that existing layout
+  # rather than defining a second one.
+  roads_file: candidate_exposure_roads.geojson
+  settlements_file: candidate_exposure_settlements.geojson
+  summary_file: candidate_exposure_summary.json
+
+  osm:
+    allow_download: false
+    # Reference hubs are not part of the M6.4 output: that stage assesses
+    # roads, buildings and settlements only. Hubs come from the same pre-event
+    # OSM directory that produced the layers M6.4 consumed, resolved by the
+    # operator with --osm-dir. There is no default, because a default path
+    # would imply layers exist for some AOI that nobody chose.
+    layer_dir: null
+    hubs_file: osm_hubs.geojson
+    # Hubs are optional. Without them, road disruption and connected-component
+    # change are still reported, and hub reachability is explicitly recorded as
+    # not assessed. It is never silently replaced by a different question.
+    require_hubs: false
+    # The hub layer's recorded OSM snapshot must be strictly before the event
+    # date (AGENTS.md §3: post-event OSM is validation-only).
+    require_pre_event_snapshot: true
+
+# -----------------------------------------------------------------------------
+# Graph construction (AGENTS.md §9 — every graph assumption must be explicit)
+#
+# Reuses src/floodmap/network/graph.py unchanged:
+#   * edges are road *pieces* between junctions; a junction is a way end, an
+#     OSM node shared by two ways, or the road vertex a settlement or hub
+#     attaches to;
+#   * the graph is an undirected multigraph weighted by length, so two ways
+#     joining the same junction pair stay separate edges;
+#   * oneway tags are ignored: in an emergency the question is whether a road
+#     exists, not its legal direction.
+# -----------------------------------------------------------------------------
+network:
+  # Settlements and hubs farther than this from any road vertex get no verdict.
+  # Matches impact.yaml network.snap_max_m so the two stages agree on what
+  # "near a road" means.
+  snap_max_m: 500
+
+  # Which unit the closure rule acts on.
+  #
+  #   road   The unit M6.4 actually measured. A whole OSM way is closed when
+  #          its own candidate_m reaches the threshold. Needs no raster and no
+  #          interpolation, but it is COARSE and PESSIMISTIC: 10 m of candidate
+  #          intersection closes the entire way, however long.
+  #
+  #   piece  Each graph piece is re-measured against the M6.3 candidate raster
+  #          with the same kernel M6.4 used, and closed on its own
+  #          candidate_m. Exact at piece resolution, and requires
+  #          --candidate-mask.
+  #
+  # "road" is the default because it is the only option that works from the
+  # M6.4 artifact alone. Per-piece quantities are never obtained by dividing a
+  # road's candidate_m between its pieces: where along a way the intersection
+  # falls is not recorded, and inventing a distribution would manufacture
+  # evidence.
+  closure_unit: road
+
+  # Candidate-intersecting length (m) on one closure unit that closes it, or
+  # all of it when the unit is shorter than the threshold. Matches
+  # candidate_exposure.yaml intersection.line_min_candidate_m, so at the
+  # default the road-unit scenario reproduces M6.4's CANDIDATE_INTERSECTING
+  # verdict exactly. One 10 m pixel width.
+  closure_min_candidate_m: 10.0
+
+  # Re-run the scenario at these thresholds and report how the unreachable
+  # count moves (AGENTS.md §9: test sensitivity to disruption thresholds).
+  sensitivity_closure_m: [10, 30, 100]
+
+  # A surviving route longer than this multiple of the baseline route is
+  # reported as a detour rather than as unaffected.
+  detour_ratio: 1.5
+
+  # Roads that lie entirely outside the candidate raster extent
+  # (OUTSIDE_CANDIDATE_GRID) are left open in both scenarios: they were never
+  # observed by the change detector, and closing the 25 km buffer ring that
+  # carries routes to hubs would make the scenario meaningless. That is a
+  # stated assumption, not an observation, and their length is reported under
+  # coverage_uncertainty rather than as unaffected road.
+  close_outside_grid_roads: false

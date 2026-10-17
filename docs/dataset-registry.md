@@ -574,8 +574,11 @@ permitted alternatives are recorded in `docs/m4-architecture-decision.md` §6 an
 ### 1.6 Unverified candidate AOI artifact — `aoi.geojson`
 
 An untracked file `aoi.geojson` appeared in the working tree. It is **not
-adopted, not committed, and not referenced by any configuration.**
-`configs/data.yaml → aoi` remains `null`.
+adopted and not committed.** It was also, at the time of this entry, *not
+referenced by any configuration* and `configs/data.yaml → aoi` was `null`; that
+last clause is superseded by §1.6.3 (M6.2), which references the recovered bytes
+provisionally and pins them, strictly for metadata-only work. This entry's
+measurements below stand as written.
 
 It is recorded here because a plausible-looking AOI with no provenance is a
 governance hazard: every acquisition, every grid and every reported number
@@ -635,21 +638,160 @@ one-coordinate-per-line layout, the file was almost certainly produced by
    covers roughly 66 km of valley. Whether that is the correct study extent for
    the event is a decision, not a measurement.
 
-**Status: `UNVERIFIED (provenance unknown)` · NOT ADOPTED.**
+**Status: `UNVERIFIED (provenance unknown)` · NOT ADOPTED** as the authoritative
+study extent. (M6.2 wired the bytes into `configs/data.yaml` provisionally and
+hash-pinned, for metadata-only analysis, without operator approval — see §1.6.3.)
 
-**Required before use:** confirm the origin and the centreline source with
-whoever produced it; record the centreline's own provenance and, if OSM-derived,
-its snapshot date; justify the 1 km buffer and plan its sensitivity analysis;
-and only then populate `configs/data.yaml → aoi` with the file committed and
-hash-pinned. Until then it is a candidate, and M1 continues to require an
-explicit operator-supplied AOI.
+**Required before it can be used as the study extent:** confirm the origin and
+the centreline source with whoever produced it; record the centreline's own
+provenance and, if OSM-derived, its snapshot date; justify the 1 km buffer and
+plan its sensitivity analysis; and only then set `provenance_status: verified`
+and commit the file. Until then it remains a candidate geometry, downloads are
+refused in code against it, and the acquisition milestone cannot be declared
+ready.
+
+#### 1.6.1 Located — 2026-10-15 (M6.2)
+
+The file is **not lost**. It was located outside this repository, in a sibling
+working tree:
+
+```
+<sibling-checkout>/aoi.geojson
+```
+
+That is a *second checkout of this project* (branch
+`feature/m5-shared-reprojection`), not an external data source. The file is
+**untracked there too** (`git status` reports `?? aoi.geojson`), so it has never
+been committed on any branch of either checkout. `git log --all` and a scan of
+every reachable git blob in this repository find no copy, and there are no
+dangling blobs containing it.
+
+**Byte-identity with the artifact measured above is confirmed, not assumed:**
+
+| Check | §1.6 record | Located file | Match |
+|---|---|---|---|
+| sha256 | `9035eeee…9362610` | `9035eeee025f311be7f16af1d23737a46caee20eb0b2a8dfa144d111b9362610` | yes |
+| size | 79,228 bytes | 79,228 bytes | yes |
+| mtime = ctime | 2026-10-05 19:46:31 | 2026-10-05 19:46:31 | yes |
+
+**Geometry re-verified independently** (shapely 2.2.0 / pyproj 3.8.0, this
+repository's venv), rather than restated from §1.6:
+
+| Property | Measured |
+|---|---|
+| validity | `is_valid: True` ("Valid Geometry"), `is_simple: True`, non-empty |
+| ring | `Polygon`, 1 ring, **1,515 vertices**, closed, clockwise (`is_ccw: False`) |
+| bounds (EPSG:4326) | `85.05814, 27.843973, 85.387889, 28.287426` |
+| area in EPSG:32645 | **132.9284 km²** vs declared `132.93` → **0.0012%** difference |
+| perimeter | 133.52 km |
+| half-perimeter vs area/2 km width | 66.76 km vs 66.46 km → **0.45%** — the thin-corridor buffer signature holds |
+
+Locating the file **does not create provenance.** Every gap listed above
+(producer, centreline source and its OSM snapshot date, 1 km buffer
+justification, "upperstream" extent) remains entirely open, and a second
+untracked copy in a sibling checkout is not independent corroboration — it is
+the same artifact on the same machine. The registry status is therefore
+**unchanged: `UNVERIFIED (provenance unknown)`**, and it is **not adopted as the
+authoritative study extent**.
+
+#### 1.6.2 Why the bounding box is not a substitute — measured
+
+The envelope of this polygon is the bbox that has been used in dry runs
+(`85.05814 27.84397 85.38789 28.28743`). Measured in EPSG:32645:
+
+| Quantity | Value |
+|---|---|
+| corridor area | 132.93 km² |
+| bbox envelope area | **1,592.91 km²** |
+| ratio | **11.98×** |
+| envelope that is *not* corridor | 1,459.98 km² — **91.7%** |
+
+Because `coverage.py` computes `area(footprint ∩ AOI) / area(AOI)`, the AOI
+choice moves the `minimum_aoi_coverage: 0.9` gate itself, and it moves in **both**
+directions. Measured here, with the project's own `evaluate_footprint_coverage`
+and a fully stated construction: square footprints of side 0.8°, 1.0° and 1.2°
+(≈ 88–130 km, the Sentinel-2 tile scale), each rotated by 0°, 10°, … 80° — real
+footprints are not north-aligned while this corridor runs diagonally — with
+centres on a 0.1° lattice spanning the bbox expanded by one side; each footprint
+scored against both AOIs at the configured `minimum_aoi_coverage: 0.9`.
+
+| Result over **16,488** footprints | Count |
+|---|---|
+| corridor accepted / envelope rejected | 205 |
+| corridor rejected / **envelope accepted** | **157** |
+
+The second row is the dangerous direction, and its worst case in this family is a
+1.0° square rotated 20° centred at `84.958°E, 27.744°N`: **0.9144 against the
+envelope (accepted) but 0.7712 against the corridor (rejected)** — the envelope
+would admit a product that leaves **23%** of the real study corridor outside the
+image, which is exactly the "flood extent bounded by the image edge" failure the
+coverage gate exists to prevent. That footprint is pinned as a regression test —
+`test_envelope_aoi_admits_a_product_that_leaves_the_corridor_partly_outside` in
+`tests/test_acquisition_validation.py` — so the claim is checkable rather than
+asserted.
+
+These counts are a demonstration of the mechanism, not a calibrated probability
+for real Sentinel footprints: the family is synthetic and its spacing is
+arbitrary. An earlier run over a different, unrecorded family reported 53
+disagreements in 600 trials (41 corridor-accept/envelope-reject, 12
+envelope-accept/corridor-reject) with a worked example of 0.9726 envelope /
+0.8919 corridor; that family is not reproducible from this repository, so the
+numbers above supersede it and confirm the direction and the magnitude rather
+than the earlier counts.
+
+Note also that the documented bbox is **rounded** to five decimals and so is not
+even a strict envelope of the polygon: `max_lat` and `max_lon` fall short of the
+true bounds by 4e-6° and 1e-6° (≈0.4 m). Immaterial physically, but it means the
+bbox neither equals nor strictly contains the corridor.
+
+Two consequences of an envelope run that outlive product selection: any
+**valid-pixel / cloud statistic** computed over the AOI would be diluted by
+~1,460 km² of land that is not corridor (91.7% of the denominator), so "fraction
+of the AOI with valid optical observations" would stop measuring the study
+area; and any **infrastructure or settlement intersection** count would be
+inflated in the same proportion, because exposure masks are cut to the AOI. An
+envelope run's numbers are therefore not merely less precise — they answer a
+different question, which is why §1.6.3 keeps the envelope out of the acquisition
+path and why option 3 in `docs/m6-acquisition-validation.md` §7 has to be
+recorded in writing, and quantified, if it is ever taken.
+
+Because the polygon is now available, the acquisition path no longer has any
+reason to use the envelope: `configs/data.yaml → acquisition.aoi` resolves to
+the polygon (§1.6.3), and any run that still passes `--aoi-bbox` is measuring
+coverage against the wrong geometry and must be reported as over-inclusive.
+
+#### 1.6.3 Configured provisionally for metadata-only work — 2026-10-15 (M6.2)
+
+To stop the bounding box being used as a de facto AOI, the located bytes are now
+referenced by `configs/data.yaml` — copied to
+`configs/aoi/trishuli-corridor-UNVERIFIED.geojson` and pinned by the same sha256
+`9035eeee…9362610` — with `provenance_status: unverified` and the open questions
+recorded as `provenance_gaps`.
+
+**This is an implementing-agent decision, not an operator approval.** It is
+reversible, it is recorded here and in the configuration, and its scope is
+narrow by construction:
+
+* it permits geometry inspection and non-destructive catalogue-candidate
+  (metadata) analysis against the real corridor;
+* it does **not** permit product downloads or any published flood-evidence
+  claim: `AreaOfInterest.authorises_download` is `false` for an unverified
+  extent, and `scripts/acquire.py` refuses `--download` on that basis; the
+  `minimum_aoi_coverage` gate is likewise never bypassed;
+* the envelope is **not** substituted for the polygon anywhere.
+
+The adoption decision itself — approve this geometry's provenance, replace it
+with an authoritative corridor, or explicitly accept the bounding box as an
+envelope-only approximation — remains open and is the operator's to make. Until
+it is made, the acquisition milestone stays `NOT READY — BLOCKED ON AOI
+APPROVAL` (`docs/m6-acquisition-validation.md` §7).
 
 ---
 
 ### 1.7 Delivered-data inspection — 2026-10-08
 
 A local Kuro Siwo delivery was inspected read-only at
-`/Users/mohammedjunaid/Documents/kuro_siwo` (12 GB, 71,065 `.tif`, 7,108
+`$KURO_SIWO_ROOT` (12 GB, 71,065 `.tif`, 7,108
 `.json`, 5 `catalogue.gkpg`). Nothing in that directory was modified, copied or
 reorganised. This section records what the delivery established and, where it
 differs, **which earlier entries it supersedes**.
@@ -761,6 +903,72 @@ unchanged and no activation is fabricated.**
 
 ---
 
+### 1.8 Derived replacement study extent — HydroRIVERS v1.0 (M6.10)
+
+A **traceable** replacement for the unverified corridor of §1.6 was constructed
+from HydroRIVERS v1.0 in M6.10. This entry records it as a **registered artifact**,
+not as the configured study extent: `configs/data.yaml` still points at §1.6 and
+remains `UNVERIFIED`.
+
+| Field | Value |
+|---|---|
+| Geometry | `configs/aoi/trishuli-corridor-hydrorivers-v10.geojson` |
+| Provenance record | `configs/aoi/trishuli-corridor-hydrorivers-v10.provenance.yaml` |
+| Construction config | `configs/aoi/trishuli-corridor-hydrorivers-v10.yaml` |
+| Builder | `scripts/build_corridor_aoi.py` (`--check` rebuilds and compares bytes) |
+| `aoi_id` | `trishuli-corridor-hydrorivers-v10-941a4079` |
+| SHA-256 | `941a4079d3f317e260a91560eaebdd019ab5cf59c87f82e8e6165c7b0564b586` |
+| Source | HydroRIVERS v1.0, tile `HydroRIVERS_v10_as`; archive sha256 `438424a0…4282f1`; extracted tree sha256 `9b88c07a…12a4e60`; CRS EPSG:4326 (verified) |
+| Selection | main stem only: 33 reaches `40771762 … 40799268`, downstream walk from the documented Rasuwagadhi border crossing to the last fully covered reach |
+| Construction | 1,000 m half-width, flat caps, EPSG:32645; latitude/longitude delivery |
+| Area / bounds | 126.2106 km²; 85.0694946, 27.8430609, 85.387277, 28.2837609 |
+| Coverage | 1.000000 inside both delivered RTC products (identical footprints) |
+| Overlap with §1.6 | Jaccard 0.8911; centroid separation 509.4 m |
+| Status | geometry traceable and reproducible; **adoption not ratified**; `provenance_status: unverified` |
+| Licence / citation | HydroSHEDS Licence Agreement; Lehner, B., Grill, G. (2013), Hydrological Processes 27(15): 2171–2186 |
+| Permitted use | **extent definition only.** HydroRIVERS is not an inference input and is deliberately absent from `ProductionInput` (AGENTS.md §3) |
+
+**Not a production input in the §3 sense.** The entry exists because the study
+area must be auditable, not because the river network may feed the model. It
+contributes no band, mask, label, feature or threshold.
+
+**Historical M6.10 candidate, not the adopted geometry.** The measurements above
+remain its historical record. M6.11–M6.13 rejected its crop-dependent terminus;
+M6.15 preserves its bytes and construction config. Do not adopt it via the old
+three-key recipe. The distinct human-approved geometry is registered in §1.9.
+Acquisition authorization remains closed for both.
+
+### 1.9 Adopted human-approved analytical AOI — M6.15
+
+| Field | Value |
+|---|---|
+| Geometry | `configs/aoi/trishuli-corridor-hydrorivers-v10-m615.geojson` |
+| Construction / provenance | Corresponding `.yaml` / `.provenance.yaml` files |
+| Identifier | `trishuli-corridor-hydrorivers-v10-m615-2ae4183f` |
+| SHA-256 | `2ae4183f0d44f80200a889ed401ba25525c52134ba1f31d65e9f2ebc3d8965e3` |
+| Human approval | M6.14 §0, explicit project-human D1–D6 approval on 2026-10-17; geometry adoption only, no organizer endorsement inferred |
+| Source | Existing HydroRIVERS v1.0 `HydroRIVERS_v10_as` delivery; tree SHA-256 `9b88c07a74404eadd42a27e1304080511bab6f533423e0d42b0f6d08912a4e60` |
+| Extent | Main stem only; 50 reaches `40771762 … 40801674`, terminus index 49; 105.8579106 km exact reference-cut line; no Narayani-trunk expansion |
+| Construction | 1,000 m half-width, flat caps, round joins, `quad_segs=32`, EPSG:32645 → EPSG:4326 |
+| Geometry | Valid single Polygon, no holes, 2,164 ring vertices; 206.1506509 km² |
+| Bounds | `84.7812496, 27.7888937, 85.3872770, 28.2837609` |
+| Independent swath acceptance | 6,763.0714 m clearance; required 250 m; local SAFE VV annotation perimeter, orbit 85 ASCENDING pre/post pair |
+| Delivered observations | 130.6416323 km² / 63.3719232% of the polygon; 75.5090186 km² unobserved |
+| Valid pixels | 1,306,418 joint pre/post VV/VH valid pixel centers; valid fraction of delivered centers 1.0; pixel-area estimate 130.6418 km², **not** total AOI area |
+| Status | **Adopted analytical geometry only**; `provenance_status: unverified`; every acquisition gate remains closed |
+| Licence / use | HydroSHEDS Licence Agreement; Lehner & Grill (2013), extent definition only, not an inference input |
+| Historical preservation | Both §1.6 UNVERIFIED geometry and §1.8 M6.10 candidate remain byte-unchanged; old outputs are stale, not re-keyed |
+
+> The study corridor extends beyond the currently available valid satellite observation coverage. Approximately 63.4% of the AOI has delivered imagery coverage; the remaining 36.6% is unobserved in the current dataset. Results apply only to the observed, valid-data area. Unobserved areas must not be interpreted as unaffected, flood-free, or undamaged.
+
+Source precision (~460 m), place-reference uncertainty (~150 m), excluded
+tributaries, missing authorized pre-event OSM and unmeasured exposure/connectivity
+buffer sensitivity remain limitations. No official competition acceptance is
+claimed. M6.15's report identifies stale downstream dependencies without
+regenerating or fabricating real infrastructure/network results.
+
+---
+
 ## 2. Validation / comparison only — never production inputs
 
 > Everything in this section is forbidden in training, feature construction,
@@ -847,6 +1055,7 @@ unchanged and no activation is fabricated.**
 | UNOSAT | **NO** | YES | NOT ACQUIRED |
 | Other published damage maps | **NO** | YES | NOT ACQUIRED |
 | OSM — post-event edits | **NO** | YES | NOT ACQUIRED |
+| HydroRIVERS v1.0 — **extent definition only** (§1.8) | **NO** | NO | VERIFIED(source) · ACQUIRED · not an inference input |
 
 ## 4. Machine-readable counterparts
 

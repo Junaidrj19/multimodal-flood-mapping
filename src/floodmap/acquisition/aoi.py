@@ -36,19 +36,52 @@ this module does not claim to have validated topology — see
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence, Tuple, Union
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 __all__ = [
+    "AoiProvenanceStatus",
     "AreaOfInterest",
     "BoundingBox",
     "PolygonGeometry",
     "SUPPORTED_AOI_CRS",
+    "geometry_from_geojson_document",
 ]
 
 #: The only CRS accepted, because the provider filter is defined in it.
 SUPPORTED_AOI_CRS = "EPSG:4326"
+
+
+class AoiProvenanceStatus(str, Enum):
+    """How well established the origin of an AOI geometry is.
+
+    This is a *provenance* judgement, not a geometry judgement. A polygon can be
+    perfectly valid, closed and self-consistent while nobody can say who
+    produced it or from what — which is exactly the situation
+    ``docs/dataset-registry.md`` §1.6 records for the Trishuli corridor
+    candidate. Geometric validity is checked elsewhere; this field carries the
+    question "do we know where this came from?".
+
+    The default is :attr:`UNVERIFIED` rather than :attr:`VERIFIED` deliberately.
+    An AOI is unverified until someone establishes otherwise, in keeping with
+    this package's rule that an unverifiable input is a rejection rather than an
+    assumption. A caller who wants the stronger claim has to make it explicitly.
+    """
+
+    #: Origin, source geometry and any buffering are recorded and confirmed.
+    VERIFIED = "verified"
+
+    #: The geometry may be fine, but its origin is not established. Permitted
+    #: for geometry inspection and catalogue *metadata* analysis; must not be
+    #: used to authorise downloads or to support a published flood claim.
+    UNVERIFIED = "unverified"
+
+    #: Exists only to exercise code. Never a study area.
+    SYNTHETIC = "synthetic"
+
 
 #: Minimum coordinate count for a closed linear ring (3 distinct + repeat).
 _MIN_RING_POINTS = 4
@@ -236,6 +269,100 @@ class AreaOfInterest(BaseModel):
             "case-study result."
         ),
     )
+    provenance_status: AoiProvenanceStatus = Field(
+        default=AoiProvenanceStatus.UNVERIFIED,
+        description=(
+            "How well established this geometry's origin is. Defaults to "
+            "UNVERIFIED: an AOI is unverified until someone establishes "
+            "otherwise, so the weaker claim is the one you get by omission."
+        ),
+    )
+    source_sha256: Optional[str] = Field(
+        default=None,
+        description=(
+            "sha256 of the file this geometry was read from, when it came from "
+            "one. Pins the bytes so a later substitution is detectable."
+        ),
+    )
+    provenance_gaps: Tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Specific unanswered questions about this geometry's origin. "
+            "Recorded so that 'unverified' names what is missing rather than "
+            "being an unexplained label."
+        ),
+    )
+
+    @field_validator("source_sha256")
+    @classmethod
+    def _sha256_is_well_formed(cls, v: Optional[str]) -> Optional[str]:
+        """Reject a malformed digest rather than storing an unusable pin."""
+        if v is None:
+            return None
+        candidate = v.strip().lower()
+        if len(candidate) != 64 or any(c not in "0123456789abcdef" for c in candidate):
+            raise ValueError(
+                f"source_sha256 must be 64 hex characters, got {v!r}; a malformed "
+                "digest cannot pin anything and would give false assurance"
+            )
+        return candidate
+
+    @model_validator(mode="after")
+    def _synthetic_and_provenance_agree(self) -> "AreaOfInterest":
+        """A synthetic geometry must not claim verified provenance.
+
+        ``is_synthetic`` predates this status field, so the two could otherwise
+        disagree and a test fixture could present itself as a verified study
+        area.
+        """
+        if self.is_synthetic and self.provenance_status is AoiProvenanceStatus.VERIFIED:
+            raise ValueError(
+                "a synthetic AOI cannot have provenance_status VERIFIED; synthetic "
+                "geometry has no real-world origin to verify"
+            )
+        return self
+
+    @property
+    def authorises_download(self) -> bool:
+        """Whether this AOI may be used to fetch product bytes.
+
+        Only a :attr:`AoiProvenanceStatus.VERIFIED` geometry does. Downloading
+        against an unverified extent would spend bandwidth and, worse, produce
+        rasters whose study area nobody chose — and those rasters are what every
+        downstream flood claim is computed from. Metadata discovery against an
+        unverified AOI is permitted, because it is reversible and informative:
+        it tells an operator what the catalogue holds without committing the
+        project to an extent.
+        """
+        return self.provenance_status is AoiProvenanceStatus.VERIFIED
+
+    def provenance_limitations(self) -> List[str]:
+        """Disclosure lines for the manifest, empty when provenance is verified.
+
+        These are written into ``manifest.limitations`` so that a reader of the
+        artifact sees the AOI caveat without having to consult the registry.
+
+        ``is_synthetic`` is checked before the status field because it is the
+        older flag and the louder claim: a fixture geometry must be disclosed as
+        such whatever its recorded status.
+        """
+        if self.is_synthetic or self.provenance_status is AoiProvenanceStatus.SYNTHETIC:
+            return [
+                f"AOI {self.aoi_id!r} is SYNTHETIC: it exists to exercise code and is "
+                "not a study area. No result computed from it describes anywhere real."
+            ]
+        if self.provenance_status is AoiProvenanceStatus.VERIFIED:
+            return []
+        lines = [
+            f"AOI {self.aoi_id!r} has UNVERIFIED provenance: its origin is not "
+            "established, so the study extent is self-asserted rather than "
+            "authoritative. Product downloads and published flood-evidence claims "
+            "are not authorised against it."
+        ]
+        if self.source_sha256:
+            lines.append(f"AOI source file sha256: {self.source_sha256}")
+        lines.extend(f"AOI provenance gap: {gap}" for gap in self.provenance_gaps)
+        return lines
 
     @field_validator("aoi_id")
     @classmethod
@@ -281,6 +408,52 @@ class AreaOfInterest(BaseModel):
             return self.geometry
         return self.geometry.bounds()
 
+    def query_envelope(self) -> "AreaOfInterest":
+        """The AOI's bounding envelope, for use as a *catalogue query* geometry.
+
+        Why this exists
+        ---------------
+        The CDSE OData endpoint accepts the spatial filter in the request URL, and
+        the recovered Trishuli corridor polygon is 1,515 vertices: transmitted at
+        full resolution it produces a ~41 kB URL and the endpoint closes the
+        connection (measured 2026-10-15, M6.2). The polite envelope does not:
+        five vertices, ~0.7 kB, and the same candidate set as a 96-vertex
+        subsampling of the corridor.
+
+        What this is and is not
+        -----------------------
+        The envelope is a **strict superset** of the AOI (the bbox of a geometry
+        contains that geometry), so using it as the spatial filter cannot exclude
+        a candidate the AOI itself would have matched. It is therefore safe as a
+        *pre-filter* whose only job is to keep the candidate list small.
+
+        It is **not** a substitute for the AOI in any measurement. Coverage must
+        still be measured against the real geometry
+        (:mod:`floodmap.acquisition.coverage`), or the gate that exists to reject
+        scenes clipping the corridor would be measuring a rectangle instead — see
+        ``docs/dataset-registry.md`` §1.6.2. Callers pass this to
+        :class:`~floodmap.acquisition.providers.base.SearchRequest` while passing
+        the AOI itself to selection.
+
+        The returned object is deliberately re-labelled so a manifest reader can
+        never mistake it for the study extent: its id carries
+        ``-query-envelope-prefilter`` and its provenance status stays
+        :attr:`AoiProvenanceStatus.UNVERIFIED`.
+        """
+        box = self.bounds()
+        return AreaOfInterest.from_bbox(
+            f"{self.aoi_id}-query-envelope-prefilter",
+            box.as_list(),
+            name=f"Bounding envelope of {self.name or self.aoi_id} (query pre-filter only)",
+            crs=self.crs,
+            provenance_status=AoiProvenanceStatus.UNVERIFIED,
+            provenance_gaps=(
+                "This geometry is a catalogue-query pre-filter, not the study area: "
+                "it is the bounding envelope of the AOI and is a strict superset of it. "
+                "Coverage is measured against the AOI, never against this envelope.",
+            ),
+        )
+
     def describe(self) -> str:
         """Short one-line description for logs and rationale text."""
         box = self.bounds()
@@ -303,6 +476,9 @@ class AreaOfInterest(BaseModel):
         name: str = "",
         is_synthetic: bool = False,
         crs: str = SUPPORTED_AOI_CRS,
+        provenance_status: AoiProvenanceStatus = AoiProvenanceStatus.UNVERIFIED,
+        source_sha256: Optional[str] = None,
+        provenance_gaps: Sequence[str] = (),
     ) -> "AreaOfInterest":
         """Build from ``[min_lon, min_lat, max_lon, max_lat]``.
 
@@ -324,6 +500,9 @@ class AreaOfInterest(BaseModel):
             crs=crs,
             name=name,
             is_synthetic=is_synthetic,
+            provenance_status=provenance_status,
+            source_sha256=source_sha256,
+            provenance_gaps=tuple(provenance_gaps),
         )
 
     @classmethod
@@ -334,6 +513,9 @@ class AreaOfInterest(BaseModel):
         *,
         name: str = "",
         is_synthetic: bool = False,
+        provenance_status: AoiProvenanceStatus = AoiProvenanceStatus.UNVERIFIED,
+        source_sha256: Optional[str] = None,
+        provenance_gaps: Sequence[str] = (),
     ) -> "AreaOfInterest":
         """Build from a GeoJSON ``Polygon`` geometry mapping.
 
@@ -358,4 +540,97 @@ class AreaOfInterest(BaseModel):
             geometry=PolygonGeometry(exterior=exterior, holes=holes),
             name=name,
             is_synthetic=is_synthetic,
+            provenance_status=provenance_status,
+            source_sha256=source_sha256,
+            provenance_gaps=tuple(provenance_gaps),
         )
+
+    @classmethod
+    def from_geojson_file(
+        cls,
+        aoi_id: str,
+        path: Path,
+        *,
+        name: str = "",
+        expected_sha256: Optional[str] = None,
+        provenance_status: AoiProvenanceStatus = AoiProvenanceStatus.UNVERIFIED,
+        provenance_gaps: Sequence[str] = (),
+    ) -> "AreaOfInterest":
+        """Read an AOI from a GeoJSON file, pinning the bytes by digest.
+
+        The digest is computed over the file as read and recorded on the result.
+        When ``expected_sha256`` is supplied it is **enforced**: a mismatch
+        raises rather than loading. Pinning matters more than usual here because
+        the study extent is the one input every downstream number inherits, so
+        a file silently swapped under a stable path would redefine the whole
+        analysis without any other visible change.
+
+        Accepts the same three containers as the CLI: a bare ``Polygon``
+        geometry, a ``Feature``, or a single-feature ``FeatureCollection``.
+        """
+        import hashlib
+        import json as _json
+
+        raw_bytes = path.read_bytes()
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        if expected_sha256 is not None:
+            expected = expected_sha256.strip().lower()
+            if digest != expected:
+                raise ValueError(
+                    f"AOI file {path} has sha256 {digest}, but {expected} was pinned. "
+                    "The geometry defining the study extent is not the one this "
+                    "configuration was written against; refusing to load it."
+                )
+
+        document = _json.loads(raw_bytes.decode("utf-8"))
+        geometry = geometry_from_geojson_document(document)
+        return cls.from_geojson_geometry(
+            aoi_id,
+            geometry,
+            name=name,
+            provenance_status=provenance_status,
+            source_sha256=digest,
+            provenance_gaps=provenance_gaps,
+        )
+
+
+def geometry_from_geojson_document(document: Any) -> Dict[str, Any]:
+    """Unwrap a GeoJSON document down to its geometry mapping.
+
+    A multi-feature ``FeatureCollection`` is refused rather than reduced to its
+    first member: choosing one would set the analysis extent by accident. See
+    ``scripts/acquire.py`` for the CLI-side counterpart of this rule.
+    """
+    if not isinstance(document, dict):
+        raise ValueError(f"the AOI GeoJSON must be a JSON object, got {type(document).__name__}")
+
+    geojson_type = document.get("type")
+    if geojson_type == "FeatureCollection":
+        features = document.get("features")
+        if not isinstance(features, (list, tuple)):
+            raise ValueError("the AOI FeatureCollection has no 'features' array")
+        if len(features) == 0:
+            raise ValueError(
+                "the AOI FeatureCollection is empty, so it defines no area of interest"
+            )
+        if len(features) > 1:
+            raise ValueError(
+                f"the AOI FeatureCollection contains {len(features)} features; it is "
+                "ambiguous which one is the area of interest, and neither the first "
+                "feature nor their union is adopted automatically."
+            )
+        feature = features[0]
+        if not isinstance(feature, dict):
+            raise ValueError("the AOI FeatureCollection's feature is not a JSON object")
+        geometry = feature.get("geometry")
+    elif geojson_type == "Feature":
+        geometry = document.get("geometry")
+    else:
+        geometry = document
+
+    if not isinstance(geometry, dict):
+        raise ValueError(
+            "the AOI GeoJSON has no usable 'geometry' member; expected a Polygon "
+            "geometry, a Feature, or a single-feature FeatureCollection"
+        )
+    return geometry

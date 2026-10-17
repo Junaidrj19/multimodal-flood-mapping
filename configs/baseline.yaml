@@ -21,7 +21,15 @@ version: 0.1.0
 
 source:
   # Sentinel-1 GRD radiometrically terrain corrected (gamma0, linear power)
-  # by Catalyst on Microsoft Planetary Computer, using the Copernicus DEM.
+  # by Catalyst on Microsoft Planetary Computer.
+  #
+  # The RTC elevation source is PlanetDEM, NOT the Copernicus DEM. Corrected
+  # 2026-10-15 (M6.2) from the provider's collection description; the previous
+  # wording credited the Copernicus DEM for a product that does not use it.
+  # `dem_collection` below is a separate Copernicus DEM read, and is the only
+  # place a Copernicus DEM credit applies here.
+  #
+  # Values are gamma0, not sigma0: gamma0 = sigma0 / cos(incidence angle).
   # Anonymous access. Licence CC-BY-4.0; credit Catalyst and Microsoft.
   stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
   token_url: "https://planetarycomputer.microsoft.com/api/sas/v1/token"

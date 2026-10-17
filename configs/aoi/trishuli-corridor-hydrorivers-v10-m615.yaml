@@ -1,0 +1,82 @@
+# M6.15: human-approved project analytical extent; not a competition boundary.
+# The historical M6.10 config/geometry/sidecar remain unchanged and rebuildable.
+aoi_id_prefix: "trishuli-corridor-hydrorivers-v10-m615"
+geojson_path: "configs/aoi/trishuli-corridor-hydrorivers-v10-m615.geojson"
+provenance_path: "configs/aoi/trishuli-corridor-hydrorivers-v10-m615.provenance.yaml"
+provenance_status: "unverified"  # deliberately does not authorize acquisition
+adoption: "human_approved_geometry_only"
+replaces: "configs/aoi/trishuli-corridor-UNVERIFIED.geojson"
+historical_candidate: "configs/aoi/trishuli-corridor-hydrorivers-v10.geojson"
+approval:
+  record: "docs/m6.14-aoi-human-decision.md"
+  section: "0. Human approval — authoritative decision for M6.15"
+  date: "2026-10-17"
+  authority: "Project human decision-maker via explicit user approval in M6.15 session"
+  scope: "AOI adoption only; no acquisition, downloads, training or FalkorDB population"
+  partial_coverage_accepted: true
+  claims: "Observed valid-data area only; unobserved regions are unknown, not negative findings"
+  disclosure: >-
+    The study corridor extends beyond the currently available valid satellite observation coverage.
+    Approximately 63.4% of the AOI has delivered imagery coverage; the remaining 36.6% is unobserved
+    in the current dataset. Results apply only to the observed, valid-data area. Unobserved areas
+    must not be interpreted as unaffected, flood-free, or undamaged.
+
+construction:
+  source:
+    product: "HydroRIVERS"
+    version: "1.0"
+    tile: "HydroRIVERS_v10_as"
+    grid: "15 arc-second (~460 m at 28 deg N)"
+    provider: "HydroSHEDS (World Wildlife Fund US)"
+    product_page: "https://www.hydrosheds.org/products/hydrorivers"
+    licence: >-
+      HydroSHEDS License Agreement (the HydroRIVERS documentation §4.1 states
+      that HydroRIVERS is covered by the same agreement): free for commercial
+      and non-commercial use; use of the data constitutes acceptance of the
+      terms. Attribution and citation are requested in §4.2 and are recorded in
+      the provenance file.
+    delivery_crs: "EPSG:4326"
+    gdb_path: "data/raw/hydrorivers/HydroRIVERS_v10_as.gdb"
+    layer: "HydroRIVERS_v10_as"
+    retrieval_date: "2026-10-17"  # existing M6.10 delivery, NOT a new retrieval
+    expected_tree_sha256: "9b88c07a74404eadd42a27e1304080511bab6f533423e0d42b0f6d08912a4e60"
+    archive_path: "data/raw/hydrorivers/HydroRIVERS_v10_as.gdb.zip"
+    expected_archive_sha256: "438424a013d54821bb4ead868e28ed90ddb4804aa29b5074ae701d6cbd4282f1"
+  reference:
+    name: "Rasuwagadhi (Rasuwa Fort) border crossing"
+    lon: 85.37778
+    lat: 28.27778
+    source: >-
+      Wikipedia, "Rasuwa Fort" (accessed 2026-10-17): coordinates
+      28°16′40″N 85°22′40″E, site described as beside the Gyirong-Rasuwagadhi
+      border crossing and the Miteri Bridge.
+    uncertainty_m: 150
+    note: >-
+      Published place coordinate, not a surveyed river station; the fort,
+      bridge and border post are distinct points within a few hundred metres.
+  terminus_rule: "human_approved_hydrological_reach"
+  start_reach_id: 40771762
+  terminus_reach_id: 40801674
+  terminus_index: 49
+  terminus_strahler_order: 5
+  next_down_reach_id: 40801919
+  next_down_strahler_order: 6
+  inset_m: 250
+  inset_role: "acceptance_only_not_terminus_definition"
+  scene_footprints:
+    - "data/raw/sentinel1/S1D_IW_GRDH_1SDV_20260816T122141_20260816T122206_004151_007980_C3AB.SAFE.zip"
+    - "data/raw/sentinel1/S1D_IW_GRDH_1SDV_20260828T122141_20260828T122206_004326_007FA4_01B4.SAFE.zip"
+  relative_orbit: 85
+  orbit_direction: "ASCENDING"
+  event_date: "2026-08-26"
+  # These historical crops measure coverage ONLY, never select the terminus.
+  observation_rasters:
+    - "data/raw/sentinel1_rtc/pre_S1D_IW_GRDH_1SDV_20260816T122141_20260816T122206_004151_007980_rtc_VVVH_aoi.tif"
+    - "data/raw/sentinel1_rtc/post_S1D_IW_GRDH_1SDV_20260828T122141_20260828T122206_004326_007FA4_rtc_VVVH_aoi.tif"
+  buffer_m: 1000
+  buffer_sensitivity_m: [500, 1000, 2000]
+  cap_style: "flat"
+  join_style: "round"
+  quad_segs: 32
+  study_crs: "EPSG:32645"
+  delivery_crs: "EPSG:4326"

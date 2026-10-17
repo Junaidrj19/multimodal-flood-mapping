@@ -26,6 +26,12 @@ dependencies = [
     "pyyaml>=6",
     "requests>=2.31",
     "rasterio>=1.4",
+    # Polygon coverage of an AOI by a scene footprint is a mandatory acquisition
+    # gate (M6.1), and the Sentinel-1 RTC route already used shapely. Deciding
+    # whether one polygon covers another is not something to reimplement, so it
+    # is a declared runtime dependency rather than an optional one. Note the
+    # `geo` extra also lists it; this pins the requirement for the core path.
+    "shapely>=2.0",
     "torch>=2.2",
 ]
 

@@ -165,12 +165,44 @@ sentinel1:
     site: "after radiometric calibration, before linear-to-dB"
     must_match_training_adapter: true
   nodata_value: null        # TODO(verify)
-  required_polarizations: null  # Must be read from the selected product/config.
-  radiometric_calibration: null # source_calibrated | linear_to_db; unresolved.
-  terrain_correction: null      # source_terrain_corrected | external_tool; unresolved.
-  resampling: null              # Explicit rasterio method; no default.
+  # ---------------------------------------------------------------------------
+  # Resolved 2026-10-15 (M6.2) for the Planetary Computer `sentinel-1-rtc`
+  # source. Each value below is set because the PROVIDER METADATA establishes
+  # it, not to make the pipeline run. Evidence is named per field.
+  #
+  # IMPORTANT — radiometric convention. These products carry gamma-nought
+  # (gamma0) LINEAR POWER, not sigma-nought. Provider methodology: calibration
+  # per ESA-EOPG-CSCOP-TN-0002, terrain correction after D. Small, "Flattening
+  # Gamma" (IEEE TGRS 49(8), 2011), whose gamma adjustment divides by the
+  # cosine of the incidence angle. gamma0 = sigma0 / cos(theta), so the two are
+  # NOT interchangeable. The `clip` block above is declared in the
+  # `linear_sigma0` domain and stays `enabled: null`: it must not be applied to
+  # gamma0 data. (It is in any case not read by the M2 pipeline today.)
+  # ---------------------------------------------------------------------------
+  # Both RTC items report `sar:polarizations: ['VV', 'VH']`, and the assembled
+  # 2-band rasters carry band descriptions exactly `VV` and `VH`.
+  required_polarizations: ["VV", "VH"]
+  # source_calibrated: the product is delivered already calibrated. Evidence:
+  # provider methodology cites ESA-EOPG-CSCOP-TN-0002, and the source band
+  # description is literally "Sentinel-1 Calibrated and Terrain Corrected VV".
+  # NOT `linear_to_db`: that path would convert to decibels, and the downstream
+  # consumer for this validation expects the source's linear power.
+  radiometric_calibration: "source_calibrated"
+  # source_terrain_corrected: radiometric terrain correction is already applied
+  # by the provider (Catalyst RTC, Flattening Gamma, PlanetDEM elevation).
+  # NOT `external_tool`: that branch raises UnsupportedPreprocessingError
+  # because no local SAR processor is implemented.
+  terrain_correction: "source_terrain_corrected"
+  # bilinear is the documented method for continuous data, and C3 ordering
+  # requires resampling in LINEAR power before any dB conversion. Note: for the
+  # M6.2 RTC validation run this setting is INERT, because the assembled pre and
+  # post windows are already on an identical grid (compare_grids reports
+  # aligned=true, all six checks passing), so no resampling is performed.
+  resampling: "bilinear"
   invalid_pixel_policy: "mask"
-  output_nodata: null
+  # M2 writes its own fill value. The RTC sources declare -32768.0; this is the
+  # output convention and is kept distinct from the input's.
+  output_nodata: -9999.0
   # AGENTS.md §4 / architecture.md §3
   same_track_only: true
 
@@ -183,7 +215,15 @@ sentinel2:
     cloud_masking: null
     shadow_masking: null
     scale_reflectance: null
-  cloud_mask_source: null   # TODO(verify)
+  # Source of the Sentinel-2 quality mask. `scl` is IMPLEMENTED and tested
+  # (M6.2): it masks by the product's own Scene Classification Layer classes,
+  # which keeps cloud / cirrus / cloud-shadow / no-data distinguishable, and
+  # it emits per-scene AOI valid-pixel statistics. It is deliberately left
+  # unset here: choosing a mask source is a production decision that also
+  # depends on which pixel statistics are acceptable for the report, and this
+  # file holds that decision only once it is made. Any other value falls back
+  # to the values-based `quality_mask` path below.
+  cloud_mask_source: null   # scl | <unset> — TODO(verify)
   # Invalid pixels must be represented, not quietly interpolated: an
   # interpolated cloud gap could be mistaken for an observation.
   invalid_pixel_policy: "mask"   # mask | interpolate — interpolate requires justification

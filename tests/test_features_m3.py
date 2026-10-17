@@ -27,7 +27,12 @@ from floodmap.acquisition.aoi import AreaOfInterest
 from floodmap.acquisition.manifest import AcquisitionManifest
 from floodmap.acquisition.outcomes import DiscoveryStatus
 from floodmap.acquisition.providers.base import DiscoveryResult, SearchRequest
-from floodmap.acquisition.scenes import Sentinel1Scene, Sentinel2Scene, SensorKind
+from floodmap.acquisition.scenes import (
+    SceneFootprint,
+    Sentinel1Scene,
+    Sentinel2Scene,
+    SensorKind,
+)
 from floodmap.acquisition.selection import select_sentinel1_pair, select_sentinel2_pair
 from floodmap.acquisition.temporal import EventSpec, SearchWindow
 from floodmap.features import numerics
@@ -97,6 +102,16 @@ def _grid(
     )
 
 
+#: Selection requires a measured AOI coverage verdict, so these synthetic
+#: scenes must carry real geometry covering `AOI` above rather than none.
+_COVERING_FOOTPRINT = SceneFootprint(
+    type="Polygon",
+    coordinates=[
+        [[85.0, 27.0], [85.1, 27.0], [85.1, 27.1], [85.0, 27.1], [85.0, 27.0]]
+    ],
+)
+
+
 def _s1_scene(scene_id: str, acquired_at: datetime) -> Sentinel1Scene:
     return Sentinel1Scene(
         scene_id=scene_id,
@@ -109,6 +124,7 @@ def _s1_scene(scene_id: str, acquired_at: datetime) -> Sentinel1Scene:
         relative_orbit=19,
         orbit_direction="DESCENDING",
         polarisations=S1_BANDS,
+        footprint=_COVERING_FOOTPRINT,
     )
 
 
@@ -122,6 +138,9 @@ def _s2_scene(scene_id: str, acquired_at: datetime) -> Sentinel2Scene:
         platform_unit="S2A",
         provider="cdse-odata",
         scene_cloud_percent=31.0,
+        processing_level="L2A",
+        tile_id="45RUL",
+        footprint=_COVERING_FOOTPRINT,
     )
 
 
@@ -130,11 +149,13 @@ def _manifest(sensor: SensorKind) -> AcquisitionManifest:
     if sensor is SensorKind.SENTINEL1:
         before = _s1_scene("s1-before", datetime(2026, 8, 20, 6, tzinfo=timezone.utc))
         after = _s1_scene("s1-after", datetime(2026, 8, 31, 6, tzinfo=timezone.utc))
-        selection = select_sentinel1_pair([before, after], PLAN)
+        selection = select_sentinel1_pair([before, after], PLAN, aoi=AOI)
     else:
         before = _s2_scene("s2-before", datetime(2026, 8, 19, 5, tzinfo=timezone.utc))
         after = _s2_scene("s2-after", datetime(2026, 8, 30, 5, tzinfo=timezone.utc))
-        selection = select_sentinel2_pair([before, after], PLAN, strategy="nearest_in_time")
+        selection = select_sentinel2_pair(
+            [before, after], PLAN, aoi=AOI, strategy="nearest_in_time"
+        )
     request = SearchRequest(
         aoi=AOI, sensor=sensor, interval=PLAN.full_extent, product_type=before.product_type
     )

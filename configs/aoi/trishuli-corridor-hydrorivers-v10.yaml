@@ -1,0 +1,126 @@
+# =============================================================================
+# M6.10 — derived Trishuli corridor AOI (HydroRIVERS v1.0)
+#
+# WHAT THIS FILE IS
+#   The construction parameters and the adoption status of the *derived* study
+#   extent. `scripts/build_corridor_aoi.py` reads this file, rebuilds the
+#   corridor from the local HydroRIVERS geodatabase, and writes:
+#
+#     configs/aoi/trishuli-corridor-hydrorivers-v10.geojson           (geometry)
+#     configs/aoi/trishuli-corridor-hydrorivers-v10.provenance.yaml   (record)
+#
+#   The provenance record pins the geometry's SHA-256, so the artifact and its
+#   digest are written in the same operation and cannot drift apart by
+#   transcription. Nothing here is hand-copied from the output.
+#
+# WHAT THIS FILE IS NOT
+#   It is not an acquisition authorisation, and it does not replace the AOI
+#   configured in `configs/data.yaml`. See "Adoption" below.
+#
+# Everything below was established in `docs/m6.10-hydrorivers-aoi-construction.md`.
+# Attribute semantics are taken from the provider's *HydroRIVERS Technical
+# Documentation v1.0* (§2.1, §3.2) — not from memory — and the licence and
+# citation are from §4.1 and §4.2 of that document.
+# =============================================================================
+
+aoi_id_prefix: "trishuli-corridor-hydrorivers-v10"
+geojson_path: "configs/aoi/trishuli-corridor-hydrorivers-v10.geojson"
+provenance_path: "configs/aoi/trishuli-corridor-hydrorivers-v10.provenance.yaml"
+
+# Geometry is now traceable (source, selected reaches, buffer and CRS are all
+# recorded and reproducible), but the extent itself is still not an operator-
+# ratified study area — see `adoption` and `docs/m6.10-...md` §6. This field
+# therefore stays `unverified`, which keeps `AreaOfInterest.authorises_download`
+# False and keeps every downstream disclosure firing. Promoting it is an
+# operator decision, not an outcome of this construction.
+provenance_status: "unverified"
+
+# -----------------------------------------------------------------------------
+# Adoption
+#
+# `not_ratified` means: this geometry exists, is reproducible and is pinned, but
+# `configs/data.yaml` still configures the older UNVERIFIED corridor. Switching
+# the configured study extent would change what every downstream stage measures,
+# and it would pre-empt two operator decisions that M6.9 §8 records as open (the
+# buffer distance and the extent policy). The exact edit needed to adopt it is
+# listed in `docs/m6.10-hydrorivers-aoi-construction.md` §6.3 and is covered by
+# tests, so adopting it is a one-line change with no geometry work.
+#
+# The older artifact is preserved verbatim; nothing here overwrites it.
+# -----------------------------------------------------------------------------
+adoption: "not_ratified"
+replaces: "configs/aoi/trishuli-corridor-UNVERIFIED.geojson"
+
+construction:
+  source:
+    product: "HydroRIVERS"
+    version: "1.0"
+    tile: "HydroRIVERS_v10_as"        # regional tile: Central and South-East Asia
+    grid: "15 arc-second (~460 m at 28 deg N)"
+    provider: "HydroSHEDS (World Wildlife Fund US)"
+    product_page: "https://www.hydrosheds.org/products/hydrorivers"
+    licence: >-
+      HydroSHEDS License Agreement (the HydroRIVERS documentation §4.1 states
+      that HydroRIVERS is covered by the same agreement): free for commercial
+      and non-commercial use; use of the data constitutes acceptance of the
+      terms. Attribution and citation are requested in §4.2 and are recorded in
+      the provenance file.
+    delivery_crs: "EPSG:4326"          # verified: the delivered layer is GCS_WGS_1984
+    gdb_path: "data/raw/hydrorivers/HydroRIVERS_v10_as.gdb"
+    layer: "HydroRIVERS_v10_as"
+    retrieval_date: "2026-10-17"
+
+  # Upstream terminal: a documented place, not a coordinate the network chose.
+  # The fort at Rasuwagadhi (Rasuwa Gadhi) stands beside the Gyirong-
+  # Rasuwagadhi border crossing and the Miteri Bridge, near the confluence of
+  # the Lhende Khola and Kerung Khola whose combined flow is the Bhote Koshi
+  # (Wikipedia, "Rasuwa Fort", accessed 2026-10-17; published coordinates
+  # 28 deg 16' 40" N, 85 deg 22' 40" E). The corridor is cut at the nearest
+  # point on the mapped main stem and that offset is recorded.
+  reference:
+    name: "Rasuwagadhi (Rasuwa Fort) border crossing"
+    lon: 85.37778
+    lat: 28.27778
+    source: >-
+      Wikipedia, "Rasuwa Fort" (accessed 2026-10-17): coordinates
+      28°16′40″N 85°22′40″E, site described as beside the Gyirong-Rasuwagadhi
+      border crossing and the Miteri Bridge.
+    uncertainty_m: 150
+    note: >-
+      The fort, the bridge and the border post are distinct points within a few
+      hundred metres; the reference is the published site coordinate, and the
+      corridor is cut where the mapped stem is closest to it.
+
+  # Downstream terminal rule. `coverage_bounded` stops at the furthest
+  # downstream reach whose *entire* buffered corridor lies inside the
+  # intersection of the delivered product footprints. This uses raster coverage
+  # as a constraint, never as evidence of the intended geographic extent.
+  terminus_rule: "coverage_bounded"
+  footprint:
+    - "data/raw/sentinel1_rtc/pre_S1D_IW_GRDH_1SDV_20260816T122141_20260816T122206_004151_007980_rtc_VVVH_aoi.tif"
+    - "data/raw/sentinel1_rtc/post_S1D_IW_GRDH_1SDV_20260828T122141_20260828T122206_004326_007FA4_rtc_VVVH_aoi.tif"
+
+  # Corridor half-width. 1 km matches the width of the corridor that was
+  # analysed in M6.2-M6.5, so the replacement is comparable rather than a
+  # different experiment. It is NOT ratified: see `buffer_sensitivity_m`, which
+  # the builder runs and records, and M6.9 §5.1.
+  buffer_m: 1000
+  buffer_sensitivity_m: [500, 1000, 2000]
+
+  # Flat caps: a round cap would bulge one buffer radius beyond each terminal
+  # node and push the downstream end back outside the coverage inset that
+  # defined it.
+  cap_style: "flat"
+  join_style: "round"
+  # Arc resolution at buffered bends. Measured on this corridor: area converges
+  # by 32 (area 125.77 / 125.89 / 125.92 km^2 at 8 / 16 / 32), so 32 removes the
+  # discretisation error rather than leaving a 0.1% under-measurement that would
+  # be inherited by every exposure count.
+  quad_segs: 32
+
+  # Buffering must happen in a projected CRS. UTM 45N covers 84-90 E, contains
+  # the whole corridor, is already the project's analysis grid, and its scale
+  # factor error at 1 km is 0.092 m (M6.9 §5.2). The AOI is delivered in
+  # EPSG:4326 because that is the only CRS the acquisition interface accepts.
+  study_crs: "EPSG:32645"
+  delivery_crs: "EPSG:4326"

@@ -33,15 +33,45 @@ from .contract import (
     load_manifest,
 )
 from .demobundle import build_demo_bundle
+from .realbundle import build_real_dashboard
+from .realdata import (
+    M63_STAGE,
+    M63Artifacts,
+    ValidationState,
+    discover_m63_artifacts,
+    resolve_project_root,
+)
+from .workflow import (
+    BlockerReport,
+    BlockerState,
+    StageState,
+    StageStatus,
+    WorkflowReport,
+    build_workflow,
+    load_blocker_report,
+)
 
 __all__ = [
     "MANIFEST_SCHEMA",
+    "M63_STAGE",
+    "M63Artifacts",
+    "BlockerReport",
+    "BlockerState",
     "DashboardContractError",
     "DashboardLayer",
     "DashboardManifest",
     "EvidenceTier",
     "LayerFormat",
     "LoadedDashboard",
+    "StageState",
+    "StageStatus",
+    "ValidationState",
+    "WorkflowReport",
     "build_demo_bundle",
+    "build_real_dashboard",
+    "build_workflow",
+    "discover_m63_artifacts",
+    "load_blocker_report",
     "load_manifest",
+    "resolve_project_root",
 ]

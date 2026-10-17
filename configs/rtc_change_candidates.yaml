@@ -1,0 +1,21 @@
+# M6.3 local Sentinel-1 RTC change-candidate stage.
+#
+# This stage consumes the already generated, same-track RTC pair. The inputs are
+# gamma-nought (γ⁰) linear power, not sigma-nought (σ⁰). The thresholds below
+# are explicit exploratory rules for candidate generation; they are not fitted
+# labels, accuracy thresholds, or a claim that RTC γ⁰ is equivalent to a σ⁰
+# training input.
+
+version: 0.1.0
+
+inputs:
+  radiometric_convention: gamma0_linear_power
+  require_same_grid: true
+  alignment_tolerance: 0.0
+
+candidate_rule:
+  # A candidate requires darkening in both VV and VH. These values are in dB
+  # log-ratio space computed from the source linear γ⁰ power.
+  vv_change_db_max: -3.0
+  vh_change_db_max: -3.0
+  rule_name: dual_polarisation_darkening_candidate

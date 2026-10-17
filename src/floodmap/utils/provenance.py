@@ -123,6 +123,7 @@ class ArtifactType(str, Enum):
     ACQUISITION_MANIFEST = "acquisition_manifest"
     PREPROCESSED_RASTER = "preprocessed_raster"
     FEATURE_STACK = "feature_stack"
+    CHANGE_CANDIDATE_MASK = "change_candidate_mask"
     SEGMENTATION_PREDICTION = "segmentation_prediction"
     INFRASTRUCTURE_EXPOSURE = "infrastructure_exposure"
     ROAD_DISRUPTION = "road_disruption"
