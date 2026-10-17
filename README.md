@@ -256,6 +256,26 @@ Core layers:
 The UI should allow a judge to move from a regional overview to the
 evidence supporting an individual impact.
 
+### What the viewer actually shows (M6.6)
+
+`dashboard/app.py` has two **strictly separated** sources, selected in the
+sidebar and never mixed:
+
+* **Real M6.3 artifacts** (default) — the validated Sentinel-1 RTC
+  change-candidate outputs in `artifacts/m6_3/rtc_change_candidates/`, with
+  acquisition metadata, the γ⁰ radiometric convention, CRS/resolution/dimensions,
+  valid and candidate pixel counts (both as recorded and independently
+  recomputed from the rasters), candidate area and its exact spatial scope,
+  provenance, limitations and a consistency-check list.
+* **Synthetic demo bundle** — placeholder data, always bannered, never a
+  fallback for a missing real artifact.
+
+A workflow panel reports each stage (RTC acquisition → preprocessing → M6.3 →
+M6.4 → M6.5) as completed, blocked, not executed or missing/invalid, and shows
+why. The core-layer list above is the target set: real M6.4/M6.5 layers do not
+appear because their execution is blocked, and the panel says so instead of
+implying zero impact. See `docs/m6.6-dashboard-integration.md`.
+
 ## 8. Situation report
 
 The system will generate a one-page situation report in:
@@ -315,7 +335,8 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 │   ├── evaluation-protocol.md    # splits, metrics, leakage prevention
 │   ├── m4-architecture-decision.md # audited datasets -> segmentation design
 │   ├── m4-dataset-adapters.md    # training-corpus adapter boundary (M4)
-│   └── dashboard-artifact-contract.md # dashboard reads artifacts, not science
+│   ├── dashboard-artifact-contract.md # dashboard reads artifacts, not science
+│   └── m6.6-dashboard-integration.md # real M6.3 path + scope reconciliation
 ├── data/                         # contents git-ignored (AGENTS.md §15)
 │   ├── raw/                      (empty)
 │   ├── interim/                  (empty)
@@ -334,7 +355,8 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 │       ├── hydrology/            (empty — namespace only)
 │       ├── evaluation/           (empty — namespace only)
 │       ├── reporting/            (empty — namespace only)
-│       ├── dashboard/            # manifest contract + synthetic demo generator
+│       ├── dashboard/            # contract + demo generator + real M6.3 discovery,
+│       │                         # validation, workflow status and rendering
 │       └── utils/
 │           ├── provenance.py     # artifact provenance schema
 │           └── config.py         # YAML configuration loader
@@ -351,14 +373,20 @@ namespaces awaiting their milestone; `(planned)` entries do not exist yet.
 │   ├── test_dataset_adapters.py  # M4 adapter behaviour (offline + external roots)
 │   ├── test_dashboard_contract.py # manifest contract + presentation-only guard
 │   ├── test_dashboard_demo.py    # synthetic bundle determinism and labelling
-│   └── test_dashboard_app.py     # Streamlit smoke tests via AppTest
+│   ├── test_dashboard_realdata.py # real M6.3 discovery/validation (synthetic fixtures)
+│   ├── test_dashboard_realbundle.py # real bundle + real/demo separation
+│   ├── test_dashboard_workflow.py # stage status + M6.4/M6.5 blocker reports
+│   ├── test_dashboard_render.py  # nodata/class-value display semantics
+│   └── test_dashboard_app.py     # Streamlit smoke tests via AppTest (both sources)
 ├── models/                       (empty; git-ignored)
-├── artifacts/                    (empty; git-ignored)
+├── artifacts/                    (git-ignored; holds the real M6.3 outputs and the
+│                                 generated synthetic demo bundle)
 ├── notebooks/                    (empty)
 ├── scripts/
 │   └── acquire.py                # metadata discovery / explicit download CLI
 ├── dashboard/
-│   └── app.py                    # Streamlit viewer (presentation layer only)
+│   └── app.py                    # Streamlit viewer (presentation layer only);
+│                                 # real M6.3 source + labelled synthetic demo
 └── reports/                      (planned — not created)
 ```
 
@@ -408,8 +436,10 @@ warning minutes before a sudden glacier collapse.
 
 ## 14. Development status
 
-Current phase: **Milestone 4 complete — training-corpus adapters, and the
-dashboard artifact contract + viewer scaffolded on synthetic data.**
+Current phase: **M6 vertical slice — real Sentinel-1 RTC change candidates
+(M6.3) are produced and presented in the dashboard; M6.4 infrastructure exposure
+and M6.5 connectivity are implemented and tested but blocked on AOI verification
+and permitted pre-event OSM.**
 
 ### What exists
 
@@ -430,25 +460,45 @@ dashboard artifact contract + viewer scaffolded on synthetic data.**
 | Milestone 4 training-corpus adapters (`datasets/`, frozen contract) | **Done** (Kuro Siwo + Sen1Floods11, `docs/m4-dataset-adapters.md`) |
 | Dashboard artifact contract + synthetic demo bundle | **Done** (`src/floodmap/dashboard/`, `docs/dashboard-artifact-contract.md`) |
 | Streamlit dashboard viewer | **Done** (presentation layer; consumes artifacts, no science) |
+| M6.1 acquisition validation gates (polygon coverage, same-track pair, truthful download outcomes) | **Done** (`docs/m6-acquisition-validation.md`) |
+| M6.2 RTC/optical preprocessing evidence and dataset registry | **Done** (`docs/m6.2-*.md`, `docs/dataset-registry.md`) |
+| M6.3 real Sentinel-1 RTC change candidates (γ⁰) | **Done** — candidate evidence only, **not** a validated flood map. Current stage `0.2.0` is AOI-scoped; the earlier `0.1.0` window-scoped run is superseded (`docs/m6.3-rtc-change-candidates.md`, `docs/m6.16-downstream-reconciliation.md`) |
+| M6.6 dashboard integration on the real M6.3 artifacts | **Done** (`docs/m6.6-dashboard-integration.md`) |
+| M6.10–M6.15 study extent: HydroRIVERS corridor construction and human-approved adoption | **Done** — `trishuli-corridor-hydrorivers-v10-m615-2ae4183f`, SHA-256 `2ae4183f…8965e3`; `provenance_status` deliberately still `unverified`, which authorises no retrieval (`docs/m6.14-aoi-human-decision.md`, `docs/m6.15-aoi-adoption-implementation.md`) |
+| M6.16 downstream reconciliation to the adopted extent (M6.3 regenerated, blockers re-keyed, dashboard reconciled) | **Done** (`docs/m6.16-downstream-reconciliation.md`) |
+| M6.17 pre-PR repository and artifact-contract audit | **Done** (`docs/m6.17-pre-pr-audit.md`) |
+| M6.4 infrastructure exposure | **Blocked** — implementation and tests exist; no permitted pre-event OSM, and the adopted extent deliberately keeps `provenance_status: unverified` so adopting it authorises no retrieval |
+| M6.5 network disruption / settlement connectivity | **Blocked** — requires real M6.4 exposure artifacts |
 | Test infrastructure incl. data-boundary guard | **Done** |
 
 ### What does NOT exist
 
-The following later stages are not implemented. Their corresponding
-`src/floodmap/` subpackages remain documented namespaces with no logic:
+The following later stages are not implemented:
 
 - Flood/debris segmentation model (**no architecture selected** — `AGENTS.md` §5)
 - Training-corpus *training run* (the M4 adapter boundary is implemented; no
   model has been trained and no labels have been fit)
-- Infrastructure exposure analysis
-- Road-network graph and disruption analysis
-- Settlement connectivity analysis
 - DEM flood-path tracing (bonus)
-- Presentation of real (non-synthetic) pipeline results in the dashboard
 - Situation report generation
 
+These stages are **implemented and tested but have produced no real result**:
+
+- M6.4 infrastructure exposure — execution blocked on separately authorised
+  pre-event OSM for the adopted extent; `provenance_status` is still `unverified`
+  (`docs/m6.4-candidate-infrastructure-exposure.md`)
+- M6.5 road-network disruption and settlement connectivity — blocked on real
+  M6.4 exposure artifacts (`docs/m6.5-candidate-network-disruption.md`)
+
+The dashboard now presents **real M6.3 artifacts** (M6.6), scoped to the adopted
+extent: 63.37 % of the corridor is delivered and validly observed, 36.63 % is
+unobserved and is shown as unknown, and the study extent is never presented as
+observed area. No real M6.4 or M6.5 result exists to present, and the viewer
+states that rather than implying zero impact.
+
 **No model has been trained and no performance has been measured.** Any
-performance figure anywhere in this repository would be fabricated.
+performance figure anywhere in this repository would be fabricated. No
+checkpoint or fitted-statistics artifact exists in this checkout (`models/`
+contains only `.gitkeep`), so M5 inference is not possible here either.
 
 ### Resolved by the official specification
 
@@ -468,10 +518,14 @@ This clears the previously reported blocking gap on the training dataset list.
 
 ### Remaining unresolved items
 
-Still recorded as TODO/UNKNOWN rather than guessed: AOI geometry, acquisition
-search window, target grid CRS/resolution, DEM delivered grid and vertical
-datum, Sentinel-1 product type and polarisations, Sentinel-2 processing level
-and band set, and the reference hub definition.
+Still recorded as TODO/UNKNOWN rather than guessed: **AOI provenance** (the
+corridor candidate geometry itself was located and is configured provisionally —
+hash-pinned, `provenance_status: unverified`, downloads refused in code until an
+operator approves or replaces it: `docs/dataset-registry.md` §1.6.3,
+`docs/m6-acquisition-validation.md` §7), acquisition search window, target grid
+CRS/resolution, DEM delivered grid and vertical datum, Sentinel-1 product type
+and polarisations, Sentinel-2 processing level and band set, and the reference
+hub definition.
 
 Milestone 3 adds no guesses to that list. Feature generation is defined over
 band *roles* rather than band names, so the unresolved polarisation and band
@@ -521,8 +575,9 @@ See `docs/dataset-registry.md` §5 for the remaining blockers.
 9.  Road-network connectivity — not started
 10. Optional DEM flood-path analysis — not started
 11. Trishuli case study — not started
-12. Dashboard — **done (contract, synthetic demo bundle, Streamlit viewer);
-    real results pending**
+12. Dashboard — **real M6.3 change-candidate artifacts presented in the viewer
+    (M6.6); M6.4/M6.5 stages shown as blocked; synthetic demo retained and
+    labelled**
 13. Situation report — not started
 14. Final evaluation and limitations — not started
 15. Demo and submission packaging — not started
@@ -542,8 +597,9 @@ uv run pytest
 # Formatting
 uv run black src scripts tests
 
-# Dashboard viewer (presentation layer; runs on the synthetic demo bundle and
-# banners it as such until real pipeline artifacts exist)
+# Dashboard viewer (presentation layer; defaults to the real M6.3 artifacts and
+# errors loudly if they are missing — select "Synthetic demo bundle" in the
+# sidebar for the labelled placeholder)
 uv run streamlit run dashboard/app.py
 ```
 

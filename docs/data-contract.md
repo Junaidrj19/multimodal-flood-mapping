@@ -64,6 +64,48 @@ AreaOfInterest + EventSpec + SearchWindow
   actual availability is inspected; the CLI accepts `--before-days` and
   `--after-days` overrides.
 
+### 0.1.1 Adopted project AOI and observation support — M6.15
+
+The generic interface still accepts caller-supplied AOIs. For this checkout,
+`configs/data.yaml → acquisition.aoi` now selects the human-approved M6.14
+project-defined corridor: `trishuli-corridor-hydrorivers-v10-m615-2ae4183f`,
+SHA-256 `2ae4183f0d44f80200a889ed401ba25525c52134ba1f31d65e9f2ebc3d8965e3`.
+It is **not** an official competition-selected boundary.
+
+HydroRIVERS v1.0 defines the main-stem extent only: reach `40771762` through
+`40801674` (zero-based index 49), exact reference cut, 1,000 m half-width,
+EPSG:32645 construction and RFC 7946 EPSG:4326 delivery. The independent common
+same-track SAFE swath must clear the buffered geometry by at least 250 m;
+this is an **acceptance criterion**, never a terminus-selection rule.
+No inference feature, label or flood extent is supplied by HydroRIVERS.
+
+Coverage is a separate contract:
+
+- **Full polygon area:** 206.1506509 km², not the raster-window denominator.
+- **Geometric delivered support:** AOI ∩ common local RTC window,
+  130.6416323 km² (63.3719232%). The undelivered 75.5090186 km² is unobserved.
+- **Joint valid support:** all pre/post VV/VH GDAL masks valid, not nodata,
+  finite and strictly positive linear power. Here 1,306,418 covered pixel centers
+  are valid (1.0 of delivered centers), estimating 130.6418 km². This
+  pixel-center estimate differs from exact polygon area at boundaries.
+- **Claims:** only observed, valid support; no extrapolated whole-AOI absence,
+  exposure, disruption or connectivity finding. Invalid delivered pixels are
+  separately excluded, never converted to negative detections.
+- **Resampling:** none in the adoption/coverage workflow. Joint rasters must
+  agree exactly in CRS, affine transform, dimensions, resolution and extent.
+
+Mandatory disclosure on dashboard, maps, metrics, reports and provenance:
+
+> The study corridor extends beyond the currently available valid satellite observation coverage. Approximately 63.4% of the AOI has delivered imagery coverage; the remaining 36.6% is unobserved in the current dataset. Results apply only to the observed, valid-data area. Unobserved areas must not be interpreted as unaffected, flood-free, or undamaged.
+
+Both `data.yaml` AOI blocks agree on path/hash/name/status/disclosures; only
+`acquisition.aoi.aoi_id` is loader-driving. Do not add a top-level `aoi_id`.
+`provenance_status: unverified`, `download.enabled: false`, and the absent
+exploratory exception remain unchanged. Historical AOIs and M6.2–M6.6 artifacts
+are preserved, not relabelled; AOI-derived results must be recomputed before
+use as current results. The real dashboard refuses stale identity/hash bindings.
+See `docs/m6.15-aoi-adoption-implementation.md` for dependencies and blockers.
+
 ### 0.2 CDSE OData provider
 
 `CdseOdataProvider` queries the CDSE OData Products endpoint. It emits
