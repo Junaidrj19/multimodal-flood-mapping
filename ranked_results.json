@@ -1,0 +1,110 @@
+{
+    "project": "Flood Response Decision Engine",
+    "data_source": "SIMULATED",
+    "warning": "Fictional demo data only. Not for real-world emergency decisions.",
+    "generated_at_utc": "2026-10-17T17:37:49.999937+00:00",
+    "settlement_count": 6,
+    "results": [
+        {
+            "settlement_id": "S001",
+            "name": "Village A",
+            "score": 95,
+            "priority": "HIGH",
+            "recommended_actions": [
+                "Verify road access and assess urgent needs.",
+                "Cross-check key information with another data source."
+            ],
+            "reasons": [
+                "Settlement may be cut off from road access.",
+                "High flood exposure is reported.",
+                "Estimated assistance needs are high."
+            ],
+            "data_confidence": "MEDIUM",
+            "data_source": "SIMULATED"
+        },
+        {
+            "settlement_id": "S004",
+            "name": "Village D",
+            "score": 70,
+            "priority": "HIGH",
+            "recommended_actions": [
+                "Verify road access and assess urgent needs.",
+                "Verify data before making a final response decision."
+            ],
+            "reasons": [
+                "Settlement may be cut off from road access.",
+                "Medium flood exposure is reported.",
+                "Estimated assistance needs are moderate."
+            ],
+            "data_confidence": "LOW",
+            "data_source": "SIMULATED"
+        },
+        {
+            "settlement_id": "S006",
+            "name": "Village F",
+            "score": 70,
+            "priority": "HIGH",
+            "recommended_actions": [
+                "Verify settlement accessibility.",
+                "Cross-check key information with another data source."
+            ],
+            "reasons": [
+                "Road connectivity information is unknown.",
+                "High flood exposure is reported.",
+                "Estimated assistance needs are high."
+            ],
+            "data_confidence": "MEDIUM",
+            "data_source": "SIMULATED"
+        },
+        {
+            "settlement_id": "S005",
+            "name": "Village E",
+            "score": 55,
+            "priority": "MEDIUM",
+            "recommended_actions": [
+                "Continue monitoring and reassess if conditions change."
+            ],
+            "reasons": [
+                "Settlement is currently classified as connected.",
+                "High flood exposure is reported.",
+                "Estimated assistance needs are high."
+            ],
+            "data_confidence": "HIGH",
+            "data_source": "SIMULATED"
+        },
+        {
+            "settlement_id": "S002",
+            "name": "Village B",
+            "score": 30,
+            "priority": "LOW",
+            "recommended_actions": [
+                "Continue monitoring and reassess if conditions change."
+            ],
+            "reasons": [
+                "Settlement is currently classified as connected.",
+                "Medium flood exposure is reported.",
+                "Estimated assistance needs are moderate."
+            ],
+            "data_confidence": "HIGH",
+            "data_source": "SIMULATED"
+        },
+        {
+            "settlement_id": "S003",
+            "name": "Village C",
+            "score": 30,
+            "priority": "LOW",
+            "recommended_actions": [
+                "Verify settlement accessibility.",
+                "Verify flood conditions.",
+                "Verify data before making a final response decision."
+            ],
+            "reasons": [
+                "Road connectivity information is unknown.",
+                "Flood exposure information is unknown.",
+                "Estimated assistance needs are lower."
+            ],
+            "data_confidence": "LOW",
+            "data_source": "SIMULATED"
+        }
+    ]
+}
