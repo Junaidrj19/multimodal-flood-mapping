@@ -17,6 +17,18 @@ reserved. © OpenStreetMap contributors. HydroRIVERS: Lehner, B., Grill, G.
 
 ---
 
+> **STATUS UPDATE — 2026-10-18 (after this release merged).** M6.4 has since
+> executed on real data under a recorded authorisation: 207 roads / 20 bridges /
+> 1 370 buildings / 1 settlement intersect SAR change candidates over 63.37 %
+> observed coverage. Results, coverage denominators, checksums and limitations are
+> in `docs/m6.4-results-partial-rtc.md`; the authorisation is
+> `docs/m6.4-osm-authorisation-record.md`. M6.5 remains unexecuted — its old
+> blocker is stale, and M6.4 produces no hub layer for it to consume.
+>
+> The sections below are **left exactly as the merged release stated them**, so
+> they read as the record of that release rather than of today. Where they say
+> M6.4 is blocked or that no exposure number exists, read the update above.
+
 ## 1. What this release contains, stage by stage
 
 | Stage | State in this release | Real-data status |
@@ -211,10 +223,17 @@ unchanged from the pre-release baseline.
 
 ## 6. Known limitations and remaining blockers
 
-1. **M6.4 is blocked** — no authorised pre-event OSM for the adopted extent;
-   `data/raw/osm/` does not exist. No exposure number exists.
-2. **M6.5 is blocked behind M6.4** — no road/settlement/connectivity result
-   exists. Nothing was synthesised or substituted.
+1. **M6.4 was blocked at this release** — no authorised pre-event OSM for the
+   adopted extent. **Superseded 2026-10-18:** a pre-event snapshot was retrieved
+   (M6.18) and its use authorised; the stage has run and its exposure numbers
+   exist (`docs/m6.4-results-partial-rtc.md`). The limitation that remains is
+   coverage, not authorisation: 36.6281 % of the corridor is outside the delivered
+   raster footprint, and every count is relative to an `UNVERIFIED` extent.
+2. **M6.5 has still produced nothing** — no road/settlement/connectivity result
+   exists. Nothing was synthesised or substituted. Its recorded blocker is now
+   stale (the M6.4 inputs it named exist), so the honest state is *not executed*,
+   and its hub prerequisite is unmet by design: M6.4 reads hubs but does not
+   assess them.
 3. **Partial satellite observation coverage** — 36.6281 % of the corridor has no
    delivered RTC pixels; the RTC crop was cut to the replaced AOI's envelope.
    Closing it needs RTC reprocessing from raw GRDs plus a DEM that is not present,
@@ -269,8 +288,11 @@ Merge `release/m6-flood-mapping` into `main` **without squash**, so the
 milestone-level commit history is preserved, after a reviewer confirms:
 
 1. this manifest (§3) contains no artifact, dataset, secret or unrelated file;
-2. M6.4/M6.5 are still described as blocked everywhere (§6.1–6.2) and no
-   infrastructure/connectivity claim is implied;
+2. no infrastructure or connectivity claim is implied beyond what the artifacts
+   support: M6.4 intersects candidates with infrastructure (spatial exposure, not
+   damage) and M6.5 has produced no result at all. At the time of this release
+   both were described as blocked (§6.1–6.2); M6.4's entry there is superseded by
+   the status update at the top of this document;
 3. the partial-coverage disclosure appears verbatim on the dashboard, in the
    M6.3 artifacts and in the reports;
 4. `provenance_status: unverified` and all closed acquisition gates are

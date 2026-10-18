@@ -35,6 +35,7 @@ __all__ = [
     "StageState",
     "StageStatus",
     "WorkflowReport",
+    "blocker_prerequisites_present",
     "build_workflow",
     "load_blocker_report",
 ]
@@ -205,6 +206,37 @@ def load_blocker_report(path: Path, *, stage: str) -> BlockerReport:
     )
 
 
+def blocker_prerequisites_present(blocker: BlockerReport, *, project_root: Path) -> bool:
+    """Whether every input a blocker recorded as *missing* now exists on disk.
+
+    A blocker report is a photograph of one moment: it records what was absent
+    when the stage refused to run, and it is the right artifact to keep. But it
+    describes that moment, not the current one. If the very files it lists have
+    since appeared, repeating its sentence — "required artifacts are not present"
+    — would be false, and the dashboard's whole purpose (``AGENTS.md`` §16) is to
+    not say false things about state.
+
+    The check deliberately trusts the blocker's own recorded evidence — the
+    ``missing_inputs``/``missing_layers`` names and the ``searched_directory`` it
+    looked in — instead of re-deciding the stage's prerequisites here. A stage
+    whose real prerequisites are broader than its old blocker will still be
+    reported as not executed; this only refuses to keep calling a file missing
+    once it is there.
+    """
+    names = [name for name in (blocker.missing or []) if str(name).strip()]
+    if not names:
+        return False
+    base = Path(blocker.searched) if blocker.searched else Path(".")
+    if not base.is_absolute():
+        base = project_root / base
+    for name in names:
+        candidate = Path(str(name))
+        path = candidate if candidate.is_absolute() else base / candidate
+        if not path.is_file():
+            return False
+    return True
+
+
 def _output_stage_status(
     stage_id: str,
     title: str,
@@ -212,6 +244,7 @@ def _output_stage_status(
     output_path: Path,
     blocker: BlockerReport,
     prerequisites: List[str],
+    project_root: Path,
 ) -> StageStatus:
     """Classify a downstream stage from its output file and blocker report."""
     if output_path.is_file():
@@ -224,6 +257,22 @@ def _output_stage_status(
         )
     if blocker.state is BlockerState.LOADED:
         if blocker.is_blocked:
+            if blocker_prerequisites_present(blocker, project_root=project_root):
+                return StageStatus(
+                    stage_id=stage_id,
+                    title=title,
+                    state=StageState.IMPLEMENTED_NOT_EXECUTED,
+                    detail=(
+                        "on-disk blocker report is stale: it records inputs as missing "
+                        f"under {blocker.searched or '(unrecorded directory)'}, and every "
+                        "one of them now exists. The stage has not been executed, so no "
+                        "output exists yet; re-run it to replace the blocker. Its recorded "
+                        "reason is kept below as history, not as current state."
+                    ),
+                    evidence=[str(blocker.path)],
+                    prerequisites=prerequisites,
+                    blocker=blocker,
+                )
             return StageStatus(
                 stage_id=stage_id,
                 title=title,
@@ -356,6 +405,7 @@ def build_workflow(
                 "Verified/authorised AOI",
                 "Permitted pre-event OSM layers",
             ],
+            project_root=root,
         ),
         _output_stage_status(
             "m6_5_disruption",
@@ -366,6 +416,7 @@ def build_workflow(
                 "M6.4 candidate exposure artifacts",
                 "M6.4 OSM hub layer",
             ],
+            project_root=root,
         ),
     ]
 

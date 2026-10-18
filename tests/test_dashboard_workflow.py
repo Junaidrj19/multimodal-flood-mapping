@@ -20,8 +20,10 @@ from floodmap.dashboard.workflow import (
     M65_BLOCKER,
     M65_DIR,
     M65_OUTPUT,
+    BlockerReport,
     BlockerState,
     StageState,
+    blocker_prerequisites_present,
     build_workflow,
     load_blocker_report,
 )
@@ -182,3 +184,139 @@ class TestWorkflowStates:
         assert "authoris" in joined
         assert "osm" in joined or "openstreetmap" in joined
         assert len(workflow.unblock_requirements) >= 4
+
+
+def _m65_blocker_payload(missing=("candidate_exposure_roads.geojson",)):
+    return {
+        "stage": "m6.5-candidate-network-disruption-0.1.0",
+        "status": "blocked",
+        "reason": "required M6.4 candidate-exposure artifacts are not present on disk: "
+        + ", ".join(missing),
+        "missing_inputs": list(missing),
+        "searched_directory": str(M64_DIR),
+        "retrieval_performed": False,
+        "authorisation": {"aoi_provenance_status": "UNVERIFIED", "authorises_download": False},
+        "next_step": ["Run M6.5 network disruption on the resulting M6.4 exposure artifacts."],
+        "not_done": ["No road network, settlement or hub was synthesised."],
+    }
+
+
+def _write_m64_inputs(tmp_path: Path, names) -> None:
+    directory = tmp_path / M64_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (directory / name).write_text(
+            '{"type": "FeatureCollection", "features": []}', encoding="utf-8"
+        )
+
+
+class TestStaleBlocker:
+    """A blocker describes the moment it was written, not the current one.
+
+    M6.4 has since run, which made the on-disk M6.5 blocker claim something that
+    is no longer true: that the M6.4 artifacts it looked for are absent. The
+    dashboard must stop repeating that sentence without pretending M6.5 ran.
+    """
+
+    def test_present_inputs_make_a_stale_blocker_not_blocked(self, tmp_path: Path):
+        _prepare(tmp_path)
+        names = ("candidate_exposure_roads.geojson", "candidate_exposure_settlements.geojson")
+        write_blocker(tmp_path / M65_DIR, M65_BLOCKER, _m65_blocker_payload(names))
+        _write_m64_inputs(tmp_path, names)
+
+        workflow = build_workflow(discover_m63_artifacts(tmp_path), project_root=tmp_path)
+        disruption = workflow.stage("m6_5_disruption")
+
+        assert disruption is not None
+        assert disruption.state is StageState.IMPLEMENTED_NOT_EXECUTED
+        assert "stale" in disruption.detail
+        # It must not claim the stage ran, and must not claim it is blocked.
+        assert disruption.state is not StageState.REAL_DATA_COMPLETE
+        assert workflow.any_blocked() is False
+
+    def test_one_still_missing_input_keeps_the_blocker_current(self, tmp_path: Path):
+        _prepare(tmp_path)
+        names = ("candidate_exposure_roads.geojson", "candidate_exposure_settlements.geojson")
+        write_blocker(tmp_path / M65_DIR, M65_BLOCKER, _m65_blocker_payload(names))
+        _write_m64_inputs(tmp_path, names[:1])
+
+        workflow = build_workflow(discover_m63_artifacts(tmp_path), project_root=tmp_path)
+        disruption = workflow.stage("m6_5_disruption")
+
+        assert disruption is not None
+        assert disruption.state is StageState.BLOCKED
+        assert "not present on disk" in disruption.detail
+
+    def test_a_blocker_without_recorded_inputs_stays_blocked(self, tmp_path: Path):
+        """Staleness cannot be proven from an empty list, so nothing is assumed."""
+        _prepare(tmp_path)
+        payload = _m65_blocker_payload(())
+        write_blocker(tmp_path / M65_DIR, M65_BLOCKER, payload)
+
+        workflow = build_workflow(discover_m63_artifacts(tmp_path), project_root=tmp_path)
+        disruption = workflow.stage("m6_5_disruption")
+
+        assert disruption is not None
+        assert disruption.state is StageState.BLOCKED
+
+    def test_the_stale_reason_is_kept_as_history(self, tmp_path: Path):
+        _prepare(tmp_path)
+        names = ("candidate_exposure_roads.geojson",)
+        write_blocker(tmp_path / M65_DIR, M65_BLOCKER, _m65_blocker_payload(names))
+        _write_m64_inputs(tmp_path, names)
+
+        workflow = build_workflow(discover_m63_artifacts(tmp_path), project_root=tmp_path)
+        disruption = workflow.stage("m6_5_disruption")
+
+        assert disruption is not None
+        assert disruption.blocker is not None
+        # The original sentence is still available, attached to the report itself.
+        assert "not present on disk" in (disruption.blocker.reason or "")
+        # ... but it is not what the stage's current detail says.
+        assert "not present on disk" not in disruption.detail
+
+
+class TestBlockerPrerequisitesPresent:
+    def _blocker(self, searched, missing):
+        return BlockerReport(
+            stage="fixture",
+            path=Path("fixture_blocker.json"),
+            state=BlockerState.LOADED,
+            status="blocked",
+            missing=list(missing),
+            searched=searched,
+        )
+
+    def test_relative_searched_directory_resolves_against_the_project_root(self, tmp_path: Path):
+        directory = tmp_path / "artifacts" / "stage"
+        directory.mkdir(parents=True)
+        (directory / "a.geojson").write_text("{}", encoding="utf-8")
+        blocker = self._blocker("artifacts/stage", ["a.geojson"])
+
+        assert blocker_prerequisites_present(blocker, project_root=tmp_path) is True
+
+    def test_an_absolute_searched_directory_is_used_as_given(self, tmp_path: Path):
+        directory = tmp_path / "elsewhere"
+        directory.mkdir(parents=True)
+        (directory / "a.geojson").write_text("{}", encoding="utf-8")
+        blocker = self._blocker(str(directory), ["a.geojson"])
+
+        assert blocker_prerequisites_present(blocker, project_root=tmp_path / "unused") is True
+
+    def test_missing_absolute_path_entry_is_checked_directly(self, tmp_path: Path):
+        target = tmp_path / "a.geojson"
+        target.write_text("{}", encoding="utf-8")
+        blocker = self._blocker(None, [str(target)])
+
+        assert blocker_prerequisites_present(blocker, project_root=tmp_path) is True
+
+    def test_no_recorded_inputs_is_not_treated_as_present(self, tmp_path: Path):
+        assert (
+            blocker_prerequisites_present(self._blocker(None, []), project_root=tmp_path) is False
+        )
+
+    def test_blank_names_are_ignored_rather_than_resolving_to_the_directory(self, tmp_path: Path):
+        assert (
+            blocker_prerequisites_present(self._blocker(None, ["   "]), project_root=tmp_path)
+            is False
+        )

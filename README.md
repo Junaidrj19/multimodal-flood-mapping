@@ -467,8 +467,8 @@ and permitted pre-event OSM.**
 | M6.10–M6.15 study extent: HydroRIVERS corridor construction and human-approved adoption | **Done** — `trishuli-corridor-hydrorivers-v10-m615-2ae4183f`, SHA-256 `2ae4183f…8965e3`; `provenance_status` deliberately still `unverified`, which authorises no retrieval (`docs/m6.14-aoi-human-decision.md`, `docs/m6.15-aoi-adoption-implementation.md`) |
 | M6.16 downstream reconciliation to the adopted extent (M6.3 regenerated, blockers re-keyed, dashboard reconciled) | **Done** (`docs/m6.16-downstream-reconciliation.md`) |
 | M6.17 pre-PR repository and artifact-contract audit | **Done** (`docs/m6.17-pre-pr-audit.md`) |
-| M6.4 infrastructure exposure | **Blocked** — implementation and tests exist; no permitted pre-event OSM, and the adopted extent deliberately keeps `provenance_status: unverified` so adopting it authorises no retrieval |
-| M6.5 network disruption / settlement connectivity | **Blocked** — requires real M6.4 exposure artifacts |
+| M6.4 infrastructure exposure on the partial RTC | **Done** — executed 2026-10-18 under a recorded OSM authorisation (`docs/m6.4-osm-authorisation-record.md`): 207 roads / 20 bridges / 1 370 buildings / 1 settlement intersect SAR change candidates, over 63.37 % observed coverage. Candidate evidence only — **not** flood, damage or impassability (`docs/m6.4-results-partial-rtc.md`) |
+| M6.5 network disruption / settlement connectivity | **Not executed** — its M6.4 inputs now exist on disk and its old blocker is stale (`docs/m6.5-candidate-network-disruption.md`) |
 | Test infrastructure incl. data-boundary guard | **Done** |
 
 ### What does NOT exist
@@ -481,19 +481,23 @@ The following later stages are not implemented:
 - DEM flood-path tracing (bonus)
 - Situation report generation
 
-These stages are **implemented and tested but have produced no real result**:
+This stage is **implemented and tested but has produced no real result**:
 
-- M6.4 infrastructure exposure — execution blocked on separately authorised
-  pre-event OSM for the adopted extent; `provenance_status` is still `unverified`
-  (`docs/m6.4-candidate-infrastructure-exposure.md`)
-- M6.5 road-network disruption and settlement connectivity — blocked on real
-  M6.4 exposure artifacts (`docs/m6.5-candidate-network-disruption.md`)
+- M6.5 road-network disruption and settlement connectivity — its M6.4 inputs
+  (the exposure layers) are now on disk, but the stage itself has not been run,
+  so no reachability, disruption or cut-off number exists. Route analysis also
+  inherits the M6.4 hub gap: hubs are read but not assessed by M6.4, and the
+  fetch-buffer road request omitted `residential` and `service`
+  (`docs/m6.5-candidate-network-disruption.md`)
 
-The dashboard now presents **real M6.3 artifacts** (M6.6), scoped to the adopted
-extent: 63.37 % of the corridor is delivered and validly observed, 36.63 % is
-unobserved and is shown as unknown, and the study extent is never presented as
-observed area. No real M6.4 or M6.5 result exists to present, and the viewer
-states that rather than implying zero impact.
+The dashboard presents **real M6.3 artifacts** (M6.6) and now reports M6.4 as
+`real_data_complete`, scoped to the adopted extent: 63.37 % of the corridor is
+delivered and validly observed, 36.63 % is unobserved and is shown as unknown, and
+the study extent is never presented as observed area. M6.5 has no output: its
+on-disk blocker is recognised as **stale** (the M6.4 inputs it recorded as
+missing now exist) and the stage is shown as not executed rather than blocked,
+so the viewer neither claims a result nor repeats a sentence that has stopped
+being true.
 
 **No model has been trained and no performance has been measured.** Any
 performance figure anywhere in this repository would be fabricated. No
@@ -576,7 +580,8 @@ See `docs/dataset-registry.md` §5 for the remaining blockers.
 10. Optional DEM flood-path analysis — not started
 11. Trishuli case study — not started
 12. Dashboard — **real M6.3 change-candidate artifacts presented in the viewer
-    (M6.6); M6.4/M6.5 stages shown as blocked; synthetic demo retained and
+    (M6.6); M6.4 shown as complete with its real exposure artifacts; M6.5 shown
+    as not executed (stale blocker explained); synthetic demo retained and
     labelled**
 13. Situation report — not started
 14. Final evaluation and limitations — not started
